@@ -20,6 +20,12 @@ LocalLink is built using a fully reactive, offline-first architecture on Android
 - **File Transfers**: Direct P2P file transfers over encrypted TCP streams, bypassing Android memory limits via chunking.
 - **Dynamic UI**: Built completely in Jetpack Compose, featuring a custom "Translucent Monolith" glassmorphic design system powered by the Haze library.
 
+## Recent Updates
+
+### 17 August
+- **Progress Ring**: Resolved rendering and state synchronization issues for the transfer progress ring.
+- **Voice Notes**: Added the voice note message button (*Known issue*: Triggers an application crash; investigation and fix in progress).
+
 ## Building the Project
 
 ### Prerequisites
