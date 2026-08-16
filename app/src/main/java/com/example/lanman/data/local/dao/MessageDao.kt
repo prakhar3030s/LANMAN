@@ -16,19 +16,19 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE contactId = :contactId ORDER BY timestamp ASC")
     fun getMessagesForContact(contactId: String): Flow<List<MessageEntity>>
 
-    @Query("SELECT * FROM messages WHERE contactId = :contactId AND status = :status ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE contactId = :contactId AND status = :status AND direction = 'OUTGOING' ORDER BY timestamp ASC")
     suspend fun getPendingMessagesForContact(
         contactId: String,
         status: MessageStatus
     ): List<MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE contactId = :contactId AND status IN (:statuses) ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE contactId = :contactId AND status IN (:statuses) AND direction = 'OUTGOING' ORDER BY timestamp ASC")
     suspend fun getUnacknowledgedMessagesForContact(
         contactId: String,
         statuses: List<MessageStatus>
     ): List<MessageEntity>
 
-    @Query("SELECT DISTINCT contactId FROM messages WHERE status IN (:statuses)")
+    @Query("SELECT DISTINCT contactId FROM messages WHERE status IN (:statuses) AND direction = 'OUTGOING'")
     fun getContactsWithUnacknowledgedMessages(
         statuses: List<MessageStatus>
     ): Flow<List<String>>

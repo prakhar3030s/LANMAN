@@ -22,6 +22,7 @@ import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
 import com.example.lanman.domain.model.MessageStatus
 import com.example.lanman.ui.chat.components.MessageCard
+import com.example.lanman.ui.chat.components.VoiceRecordButton
 import com.example.lanman.ui.common.GlassTextField
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
@@ -42,6 +43,7 @@ fun ConversationScreen(
     
     val listState = rememberLazyListState()
     val hazeState = remember { HazeState() }
+    val context = androidx.compose.ui.platform.LocalContext.current
     
     var inputText by remember { mutableStateOf("") }
     var previousMessageCount by remember { mutableIntStateOf(0) }
@@ -285,21 +287,34 @@ fun ConversationScreen(
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(16.dp))
-                IconButton(
-                    onClick = {
-                        if (inputText.isNotBlank()) {
+                if (inputText.isNotBlank()) {
+                    IconButton(
+                        onClick = {
                             viewModel.sendMessage(inputText)
                             inputText = ""
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(ElectricCyan.copy(alpha = 0.2f), shape = androidx.compose.foundation.shape.CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = ElectricCyan
+                        )
+                    }
+                } else {
+                    VoiceRecordButton(
+                        onRecordComplete = { file, durationMs ->
+                            viewModel.sendVoiceMessage(
+                                uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context, 
+                                    "${context.packageName}.fileprovider", 
+                                    file
+                                ), 
+                                durationMs = durationMs
+                            )
                         }
-                    },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(ElectricCyan.copy(alpha = 0.2f), shape = androidx.compose.foundation.shape.CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = ElectricCyan
                     )
                 }
             }

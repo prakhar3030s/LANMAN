@@ -12,6 +12,12 @@ object StreamingEncryption {
     private const val GCM_TAG_LENGTH_BIT = 128
     private const val ALGORITHM = "AES/GCM/NoPadding"
     
+    private val encryptCipherThreadLocal = object : ThreadLocal<Cipher>() {
+        override fun initialValue(): Cipher {
+            return Cipher.getInstance(ALGORITHM)
+        }
+    }
+
     private val decryptCipherThreadLocal = object : ThreadLocal<Cipher>() {
         override fun initialValue(): Cipher {
             return Cipher.getInstance(ALGORITHM)
@@ -19,39 +25,24 @@ object StreamingEncryption {
     }
 
     /**
-     * Streams data from [inputStream], encrypts it in chunks using AES-GCM, and writes to [outputStream].
-     * The nonce for each chunk is derived by XORing the baseNonce with the chunk index.
+     * Encrypts a single chunk of plaintext data (up to 512 KB) using the given chunkIndex.
      */
-    fun encryptStream(
-        inputStream: InputStream,
-        outputStream: OutputStream,
+    fun encryptChunk(
+        plaintext: ByteArray,
+        offset: Int,
+        length: Int,
+        chunkIndex: Int,
         aesKey: ByteArray,
         baseNonce: ByteArray
-    ) {
+    ): ByteArray {
         val secretKey = SecretKeySpec(aesKey, "AES")
-        val cipher = Cipher.getInstance(ALGORITHM)
-        val buffer = ByteArray(CHUNK_SIZE)
-        var chunkIndex = 0
+        val chunkNonce = deriveNonce(baseNonce, chunkIndex)
+        
+        val cipher = encryptCipherThreadLocal.get()!!
+        val spec = GCMParameterSpec(GCM_TAG_LENGTH_BIT, chunkNonce)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
 
-        while (true) {
-            val bytesRead = inputStream.read(buffer)
-            if (bytesRead == -1) break
-
-            val chunkNonce = deriveNonce(baseNonce, chunkIndex)
-            val spec = GCMParameterSpec(GCM_TAG_LENGTH_BIT, chunkNonce)
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
-
-            val ciphertext = cipher.doFinal(buffer, 0, bytesRead)
-            
-            // Prepend a 4-byte length to each chunk in the local encrypted file 
-            // so we can read it out chunk-by-chunk later.
-            val lengthBuffer = ByteBuffer.allocate(4).putInt(ciphertext.size).array()
-            outputStream.write(lengthBuffer)
-            outputStream.write(ciphertext)
-
-            chunkIndex++
-        }
-        outputStream.flush()
+        return cipher.doFinal(plaintext, offset, length)
     }
 
     /**
@@ -71,6 +62,45 @@ object StreamingEncryption {
         cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
 
         return cipher.doFinal(ciphertext)
+    }
+
+    /**
+     * Streams data from [inputStream], encrypts it in chunks using AES-GCM, and writes to [outputStream].
+     * The nonce for each chunk is derived by XORing the baseNonce with the chunk index.
+     */
+    fun encryptStream(
+        inputStream: InputStream,
+        outputStream: OutputStream,
+        aesKey: ByteArray,
+        baseNonce: ByteArray
+    ) {
+        val secretKey = SecretKeySpec(aesKey, "AES")
+        val cipher = encryptCipherThreadLocal.get()!!
+        val buffer = com.example.lanman.util.network.ByteArrayPool.acquireChunkBuffer()
+        var chunkIndex = 0
+
+        try {
+            while (true) {
+                val bytesRead = inputStream.read(buffer)
+                if (bytesRead == -1) break
+
+                val chunkNonce = deriveNonce(baseNonce, chunkIndex)
+                val spec = GCMParameterSpec(GCM_TAG_LENGTH_BIT, chunkNonce)
+                cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
+
+                val ciphertext = cipher.doFinal(buffer, 0, bytesRead)
+                
+                // Prepend 4-byte length
+                val lengthBuffer = ByteBuffer.allocate(4).putInt(ciphertext.size).array()
+                outputStream.write(lengthBuffer)
+                outputStream.write(ciphertext)
+
+                chunkIndex++
+            }
+            outputStream.flush()
+        } finally {
+            com.example.lanman.util.network.ByteArrayPool.releaseChunkBuffer(buffer)
+        }
     }
 
     /**

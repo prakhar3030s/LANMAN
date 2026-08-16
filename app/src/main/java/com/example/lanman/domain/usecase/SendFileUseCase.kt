@@ -52,7 +52,7 @@ class SendFileUseCase @Inject constructor(
         }
         val mimeType = contentResolver.getType(fileUri) ?: "application/octet-stream"
         
-        // 2. Generate random AES-256 key and 96-bit nonce
+        // 2. Generate random AES-256 key and 96-bit nonce (44 bytes total)
         val secureRandom = SecureRandom()
         val aesKey = ByteArray(32)
         val baseNonce = ByteArray(12)
@@ -84,31 +84,18 @@ class SendFileUseCase @Inject constructor(
             }
         }
         
-        // 3. Setup output file
-        val uploadDir = File(context.filesDir, "encrypted_uploads")
-        if (!uploadDir.exists()) uploadDir.mkdirs()
+        // 3. Save only the tiny 44-byte key material (Zero temp data file on disk!)
+        val keysDir = File(context.filesDir, "transfer_keys")
+        if (!keysDir.exists()) keysDir.mkdirs()
         
         val fileTransferId = UUID.randomUUID().toString()
-        val encryptedFile = File(uploadDir, fileTransferId)
-        
-        // 4. Encrypt the key and nonce and save it alongside the file, or keep it in the DB?
-        // Wait, where do we store the aesKey and baseNonce so the MessageDispatcher can use it later?
-        // We can prepend it to the local encrypted file!
-        // 32 bytes key + 12 bytes nonce = 44 bytes.
-        // The dispatcher can read the first 44 bytes to build the encryptedKeyEnvelope, and then stream the rest.
-        
-        contentResolver.openInputStream(fileUri)?.use { inputStream ->
-            FileOutputStream(encryptedFile).use { outputStream ->
-                // Write the raw key and nonce to the start of our local temp file
-                outputStream.write(aesKey)
-                outputStream.write(baseNonce)
-                
-                // Streamingly encrypt the rest
-                StreamingEncryption.encryptStream(inputStream, outputStream, aesKey, baseNonce)
-            }
-        } ?: throw IllegalArgumentException("Could not open input stream for URI: $fileUri")
+        val keyFile = File(keysDir, fileTransferId)
+        FileOutputStream(keyFile).use { out ->
+            out.write(aesKey)
+            out.write(baseNonce)
+        }
 
-        // 5. Create Message and FileTransfer in DB
+        // 4. Create Message and FileTransfer in DB pointing directly to original URI
         val messageId = UUID.randomUUID().toString()
         val message = Message(
             id = messageId,
@@ -126,7 +113,7 @@ class SendFileUseCase @Inject constructor(
             fileName = fileName,
             fileSizeBytes = fileSize,
             mimeType = mimeType,
-            localUri = encryptedFile.absolutePath,
+            localUri = fileUri.toString(),
             thumbnailUri = thumbnailUri
         )
         

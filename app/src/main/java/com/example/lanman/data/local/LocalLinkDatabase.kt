@@ -16,7 +16,7 @@ import com.example.lanman.data.local.entity.*
         SessionEntity::class,
         MessageRequestEntity::class
     ],
-    version = 7,
+    version = 9,
     exportSchema = true
 )
 @TypeConverters(EnumConverters::class)

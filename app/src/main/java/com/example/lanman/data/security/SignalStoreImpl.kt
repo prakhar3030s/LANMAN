@@ -70,14 +70,29 @@ class SignalStoreImpl @Inject constructor(
         secureKeyStore.removePreKey(preKeyId)
     }
 
+    private val sessionCache = java.util.concurrent.ConcurrentHashMap<String, SessionRecord>()
+
+    private fun sessionKey(address: SignalProtocolAddress?): String {
+        return if (address == null) "" else "${address.name}_${address.deviceId}"
+    }
+
     override fun loadSession(address: SignalProtocolAddress?): SessionRecord {
         address ?: return SessionRecord()
+        val key = sessionKey(address)
+        
+        val cached = sessionCache[key]
+        if (cached != null) {
+            return cached
+        }
+
         val entity = sessionDao.getSession(address.name, address.deviceId)
-        return if (entity != null) {
+        val record = if (entity != null) {
             SessionRecord(entity.sessionRecord)
         } else {
             SessionRecord()
         }
+        sessionCache[key] = record
+        return record
     }
 
     override fun getSubDeviceSessions(name: String?): MutableList<Int> {
@@ -87,6 +102,9 @@ class SignalStoreImpl @Inject constructor(
 
     override fun storeSession(address: SignalProtocolAddress?, record: SessionRecord?) {
         if (address != null && record != null) {
+            val key = sessionKey(address)
+            sessionCache[key] = record
+
             val entity = SessionEntity(
                 addressName = address.name,
                 deviceId = address.deviceId,
@@ -97,17 +115,23 @@ class SignalStoreImpl @Inject constructor(
     }
 
     override fun containsSession(address: SignalProtocolAddress?): Boolean {
-        return address != null && sessionDao.getSession(address.name, address.deviceId) != null
+        if (address == null) return false
+        val key = sessionKey(address)
+        if (sessionCache.containsKey(key)) return true
+        return sessionDao.getSession(address.name, address.deviceId) != null
     }
 
     override fun deleteSession(address: SignalProtocolAddress?) {
         if (address != null) {
+            val key = sessionKey(address)
+            sessionCache.remove(key)
             sessionDao.deleteSession(address.name, address.deviceId)
         }
     }
 
     override fun deleteAllSessions(name: String?) {
         if (name != null) {
+            sessionCache.keys.filter { it.startsWith("${name}_") }.forEach { sessionCache.remove(it) }
             sessionDao.deleteAllSessions(name)
         }
     }

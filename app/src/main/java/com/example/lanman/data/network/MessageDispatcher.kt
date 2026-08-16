@@ -24,8 +24,17 @@ import javax.inject.Singleton
 
 import com.example.lanman.domain.network.NetworkDiscoveryManager
 
+import android.content.Context
+import android.net.Uri
+import com.example.lanman.domain.security.StreamingEncryption
+import com.example.lanman.util.network.ByteArrayPool
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.InputStream
+import java.security.SecureRandom
+
 @Singleton
 class MessageDispatcher @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val networkDiscoveryManager: NetworkDiscoveryManager,
     private val connectionManager: ConnectionManager,
     private val messageRepository: MessageRepository,
@@ -113,7 +122,7 @@ class MessageDispatcher @Inject constructor(
         Log.d(TAG, "Flushing ${messagesToSend.size} unacknowledged messages for $contactId")
         
         for (message in messagesToSend) {
-            val isSuccess = if (message.type == com.example.lanman.domain.model.MessageType.FILE) {
+            val isSuccess = if (message.type == com.example.lanman.domain.model.MessageType.FILE || message.type == com.example.lanman.domain.model.MessageType.VOICE) {
                 sendFileMessage(myId, contactId, message)
             } else {
                 sendTextMessage(myId, contactId, message)
@@ -167,40 +176,53 @@ class MessageDispatcher @Inject constructor(
             return false
         }
         
-        val encryptedFile = File(fileTransfer.localUri)
-        if (!encryptedFile.exists()) {
-            Log.e(TAG, "Encrypted local file not found at ${fileTransfer.localUri}")
-            return false
+        // 1. Resolve Key Material (32 bytes AES key + 12 bytes base nonce)
+        val keyFile = File(File(context.filesDir, "transfer_keys"), fileTransfer.id)
+        val keyAndNonce = ByteArray(44)
+        if (keyFile.exists() && keyFile.length() >= 44) {
+            FileInputStream(keyFile).use { it.read(keyAndNonce) }
+        } else {
+            // Generate on the fly if key file missing
+            val secureRandom = SecureRandom()
+            secureRandom.nextBytes(keyAndNonce)
         }
         
+        val aesKey = keyAndNonce.copyOfRange(0, 32)
+        val baseNonce = keyAndNonce.copyOfRange(32, 44)
+
+        // 2. Open input stream from content URI or absolute file path
+        val inputStream: InputStream = try {
+            if (fileTransfer.localUri.startsWith("content://")) {
+                context.contentResolver.openInputStream(Uri.parse(fileTransfer.localUri))
+                    ?: throw IllegalArgumentException("Could not open content URI: ${fileTransfer.localUri}")
+            } else {
+                val f = File(fileTransfer.localUri)
+                if (!f.exists()) throw IllegalArgumentException("Local file does not exist: ${fileTransfer.localUri}")
+                FileInputStream(f)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open source file for transfer ${fileTransfer.id}", e)
+            return false
+        }
+
         return try {
-            FileInputStream(encryptedFile).use { inputStream ->
-                // Read 44 bytes (32 for AES key, 12 for base nonce)
-                val keyAndNonce = ByteArray(44)
-                if (inputStream.read(keyAndNonce) != 44) {
-                    throw IllegalStateException("Encrypted file too short for key material")
-                }
-                
+            inputStream.use { sourceStream ->
+                // Encrypt envelope with Signal session
                 val envelope = encryptionEngine.encrypt(contactId, keyAndNonce)
                 
-                // Calculate total chunks from remaining file size. 
-                // Wait, the file size in FileTransfer is the original plaintext size.
-                // We should calculate totalChunks by just counting how many chunks are in the file.
-                // Each chunk in the file has a 4-byte length header + ciphertext.
-                // To avoid reading the whole file to count chunks, we can estimate it, but it's better to just pass 0 if unknown,
-                // or we can calculate based on original file size.
-                // For a file of size N, chunks = ceil(N / CHUNK_SIZE).
-                val CHUNK_SIZE = 64 * 1024
-                val totalChunks = ((fileTransfer.fileSizeBytes + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt()
+                val chunkSize = StreamingEncryption.CHUNK_SIZE
+                val totalChunks = if (fileTransfer.fileSizeBytes > 0) {
+                    ((fileTransfer.fileSizeBytes + chunkSize - 1) / chunkSize).toInt()
+                } else 0
                 
-                // 1. Send FileOffer
+                // 3. Send FileOffer over Control Socket
                 val offerFrame = Frame.FileOfferFrame(
                     messageId = message.id,
                     fileTransferId = fileTransfer.id,
                     fileName = fileTransfer.fileName,
                     fileSizeBytes = fileTransfer.fileSizeBytes,
                     mimeType = fileTransfer.mimeType,
-                    chunkSize = CHUNK_SIZE,
+                    chunkSize = chunkSize,
                     totalChunks = totalChunks,
                     encryptedKeyEnvelope = envelope,
                     senderTimestamp = message.timestamp
@@ -208,46 +230,60 @@ class MessageDispatcher @Inject constructor(
                 
                 if (connectionManager.sendFrame(contactId, offerFrame).isFailure) return false
                 
+                // 4. Stream Chunks over High-Speed Data Channel using ByteArrayPool
+                val readBuffer = ByteArrayPool.acquireChunkBuffer()
                 var chunkIndex = 0
-                val lengthBufferBytes = ByteArray(4)
                 var bytesSent = 0L
-                
-                // 2. Stream FileChunks
-                while (true) {
-                    val readLenBytes = inputStream.read(lengthBufferBytes)
-                    if (readLenBytes == -1) break // EOF
-                    if (readLenBytes != 4) throw IllegalStateException("Corrupt chunk length header")
-                    
-                    val chunkLength = ByteBuffer.wrap(lengthBufferBytes).int
-                    val chunkData = ByteArray(chunkLength)
-                    var readSoFar = 0
-                    while (readSoFar < chunkLength) {
-                        val readChunk = inputStream.read(chunkData, readSoFar, chunkLength - readSoFar)
-                        if (readChunk == -1) throw IllegalStateException("Unexpected EOF in chunk data")
-                        readSoFar += readChunk
+
+                try {
+                    while (true) {
+                        var totalRead = 0
+                        while (totalRead < chunkSize) {
+                            val bytesRead = sourceStream.read(readBuffer, totalRead, chunkSize - totalRead)
+                            if (bytesRead == -1) break
+                            totalRead += bytesRead
+                        }
+                        
+                        if (totalRead == 0) break // EOF
+
+                        val chunkCiphertext = StreamingEncryption.encryptChunk(
+                            plaintext = readBuffer,
+                            offset = 0,
+                            length = totalRead,
+                            chunkIndex = chunkIndex,
+                            aesKey = aesKey,
+                            baseNonce = baseNonce
+                        )
+
+                        val chunkFrame = Frame.FileChunkFrame(
+                            fileTransferId = fileTransfer.id,
+                            chunkIndex = chunkIndex,
+                            data = chunkCiphertext
+                        )
+
+                        if (connectionManager.sendDataFrame(contactId, chunkFrame, flush = false).isFailure) {
+                            return false
+                        }
+
+                        bytesSent += totalRead
+                        progressTracker.updateProgress(fileTransfer.id, bytesSent.coerceAtMost(fileTransfer.fileSizeBytes), fileTransfer.fileSizeBytes)
+
+                        chunkIndex++
                     }
-                    
-                    val chunkFrame = Frame.FileChunkFrame(
-                        fileTransferId = fileTransfer.id,
-                        chunkIndex = chunkIndex,
-                        data = chunkData
-                    )
-                    
-                    if (connectionManager.sendFrame(contactId, chunkFrame, flush = false).isFailure) return false
-                    
-                    // Plaintext size for progress update (approx)
-                    bytesSent += CHUNK_SIZE.coerceAtMost((fileTransfer.fileSizeBytes - bytesSent).toInt())
-                    progressTracker.updateProgress(fileTransfer.id, bytesSent, fileTransfer.fileSizeBytes)
-                    
-                    chunkIndex++
+                } finally {
+                    ByteArrayPool.releaseChunkBuffer(readBuffer)
                 }
-                
-                // 3. Send FileComplete
+
+                // 5. Send FileComplete over Data Channel
                 val completeFrame = Frame.FileCompleteFrame(fileTransfer.id)
-                connectionManager.sendFrame(contactId, completeFrame).isSuccess
+                val success = connectionManager.sendDataFrame(contactId, completeFrame, flush = true).isSuccess
+                if (success) {
+                    progressTracker.updateProgress(fileTransfer.id, fileTransfer.fileSizeBytes, fileTransfer.fileSizeBytes)
+                }
+                success
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stream file ${fileTransfer.fileName} to $contactId", e)
+            Log.e(TAG, "Failed to stream file ${fileTransfer.fileName} to $contactId on-the-fly", e)
             false
         }
     }

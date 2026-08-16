@@ -12,6 +12,8 @@ import com.example.lanman.domain.repository.FileTransferRepository
 import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.repository.ProfileRepository
 import com.example.lanman.domain.security.EncryptionEngine
+import android.content.Context
+import com.example.lanman.domain.network.NetworkDiscoveryManager
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -24,7 +26,8 @@ import java.nio.charset.StandardCharsets
 class MessageDispatcherTest {
 
     private lateinit var dispatcher: MessageDispatcher
-    private val presenceTracker: PresenceTracker = mockk(relaxed = true)
+    private val context: Context = mockk(relaxed = true)
+    private val networkDiscoveryManager: NetworkDiscoveryManager = mockk(relaxed = true)
     private val connectionManager: ConnectionManager = mockk(relaxed = true)
     private val messageRepository: MessageRepository = mockk(relaxed = true)
     private val profileRepository: ProfileRepository = mockk(relaxed = true)
@@ -35,7 +38,8 @@ class MessageDispatcherTest {
     @Before
     fun setup() {
         dispatcher = MessageDispatcher(
-            presenceTracker,
+            context,
+            networkDiscoveryManager,
             connectionManager,
             messageRepository,
             profileRepository,
@@ -49,7 +53,7 @@ class MessageDispatcherTest {
     fun `test flush pending messages sends message and updates status`() = runTest {
         val myId = "me123"
         val contactId = "contact123"
-        coEvery { profileRepository.getProfile() } returns flowOf(Profile(myId, "Me"))
+        coEvery { profileRepository.getProfile() } returns flowOf(Profile(myId, "Me", null, 0L))
         
         val pendingMsg = Message(
             id = "msg1",

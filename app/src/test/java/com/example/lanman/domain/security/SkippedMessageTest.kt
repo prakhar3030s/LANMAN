@@ -2,34 +2,49 @@ package com.example.lanman.domain.security
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SessionCipher
 import org.signal.libsignal.protocol.SignalProtocolAddress
+import org.signal.libsignal.protocol.ecc.ECKeyPair
+import org.signal.libsignal.protocol.kem.KEMKeyPair
+import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.message.CiphertextMessage
 import org.signal.libsignal.protocol.message.PreKeySignalMessage
 import org.signal.libsignal.protocol.message.SignalMessage
+import org.signal.libsignal.protocol.state.KyberPreKeyRecord
 import org.signal.libsignal.protocol.state.PreKeyBundle
-import org.signal.libsignal.protocol.util.KeyHelper
+import org.signal.libsignal.protocol.state.PreKeyRecord
+import org.signal.libsignal.protocol.state.SignedPreKeyRecord
 
 class SkippedMessageTest {
 
     @Test
     fun testSkippedMessageHandling() {
         // 1. Setup Alice (Sender)
-        val aliceIdentity = KeyHelper.generateIdentityKeyPair()
-        val aliceRegistrationId = KeyHelper.generateRegistrationId(false)
+        val aliceIdentity = IdentityKeyPair.generate()
+        val aliceRegistrationId = 1234
         val aliceStore = InMemorySignalProtocolStore(aliceIdentity, aliceRegistrationId)
 
         // 2. Setup Bob (Receiver)
-        val bobIdentity = KeyHelper.generateIdentityKeyPair()
-        val bobRegistrationId = KeyHelper.generateRegistrationId(false)
+        val bobIdentity = IdentityKeyPair.generate()
+        val bobRegistrationId = 5678
         val bobStore = InMemorySignalProtocolStore(bobIdentity, bobRegistrationId)
 
-        val bobSignedPreKey = KeyHelper.generateSignedPreKey(bobIdentity, 1)
-        val bobPreKey = KeyHelper.generatePreKeys(1, 1)[0]
-        
+        val bobSignedKeyPair = ECKeyPair.generate()
+        val bobSignedSig = bobIdentity.privateKey.calculateSignature(bobSignedKeyPair.publicKey.serialize())
+        val bobSignedPreKey = SignedPreKeyRecord(1, System.currentTimeMillis(), bobSignedKeyPair, bobSignedSig)
+
+        val bobPreKeyPair = ECKeyPair.generate()
+        val bobPreKey = PreKeyRecord(1, bobPreKeyPair)
+
+        val bobKyberKeyPair = KEMKeyPair.generate(KEMKeyType.KYBER_1024)
+        val bobKyberSig = bobIdentity.privateKey.calculateSignature(bobKyberKeyPair.publicKey.serialize())
+        val bobKyberPreKey = KyberPreKeyRecord(1, System.currentTimeMillis(), bobKyberKeyPair, bobKyberSig)
+
         bobStore.storeSignedPreKey(bobSignedPreKey.id, bobSignedPreKey)
         bobStore.storePreKey(bobPreKey.id, bobPreKey)
+        bobStore.storeKyberPreKey(bobKyberPreKey.id, bobKyberPreKey)
 
         // 3. Alice builds a session with Bob's public keys
         val bobAddress = SignalProtocolAddress("bob", 1)
@@ -43,7 +58,10 @@ class SkippedMessageTest {
             bobSignedPreKey.id,
             bobSignedPreKey.keyPair.publicKey,
             bobSignedPreKey.signature,
-            bobIdentity.publicKey
+            bobIdentity.publicKey,
+            bobKyberPreKey.id,
+            bobKyberPreKey.keyPair.publicKey,
+            bobKyberPreKey.signature
         )
 
         val sessionBuilder = SessionBuilder(aliceStore, bobAddress)
@@ -72,7 +90,16 @@ class SkippedMessageTest {
         // So we must deliver msg1 first to establish the session, OR we can establish the session manually.
         // Let's deliver msg1 first so Bob establishes the session.
         
-        val decrypted1 = bobCipher.decrypt(PreKeySignalMessage(msg1Ciphertext.serialize()))
+        fun decryptMsg(cipher: SessionCipher, ciphertext: CiphertextMessage): ByteArray {
+            return if (ciphertext.type == CiphertextMessage.PREKEY_TYPE) {
+                cipher.decrypt(PreKeySignalMessage(ciphertext.serialize()))
+            } else {
+                cipher.decrypt(SignalMessage(ciphertext.serialize()))
+            }
+        }
+
+        // Establish session with msg1
+        val decrypted1 = decryptMsg(bobCipher, msg1Ciphertext)
         assertEquals("Message 1", String(decrypted1))
 
         // Now Alice sends messages 4, 5, 6
@@ -86,15 +113,15 @@ class SkippedMessageTest {
 
         // Scramble them for Bob: 6, 5, 4
         // Bob receives 6 first (skipping 4 and 5)
-        val decrypted6 = bobCipher.decrypt(SignalMessage(msg6Ciphertext.serialize()))
+        val decrypted6 = decryptMsg(bobCipher, msg6Ciphertext)
         assertEquals("Message 6", String(decrypted6))
 
         // Bob receives 5 (fills the gap)
-        val decrypted5 = bobCipher.decrypt(SignalMessage(msg5Ciphertext.serialize()))
+        val decrypted5 = decryptMsg(bobCipher, msg5Ciphertext)
         assertEquals("Message 5", String(decrypted5))
 
         // Bob receives 4 (fills the gap)
-        val decrypted4 = bobCipher.decrypt(SignalMessage(msg4Ciphertext.serialize()))
+        val decrypted4 = decryptMsg(bobCipher, msg4Ciphertext)
         assertEquals("Message 4", String(decrypted4))
         
         // This confirms the Double Ratchet handles skipped messages flawlessly.

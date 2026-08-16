@@ -20,7 +20,7 @@ class FrameCodecTest {
     @Test
     fun `test encode and decode HelloFrame`() {
         val contactId = java.util.UUID.randomUUID().toString()
-        val frame = Frame.HelloFrame(contactId)
+        val frame = Frame.HelloFrame(contactId, displayName = "Alice", identityKey = "key123")
         val bytes = FrameCodec.encode(frame)
         
         val decoded = FrameCodec.decode(ByteArrayInputStream(bytes)) as Frame.HelloFrame
@@ -30,10 +30,11 @@ class FrameCodecTest {
     @Test
     fun `test decode malformed length exceeds max`() {
         // Construct a frame with an excessively large length (e.g. 11MB)
-        val out = java.io.DataOutputStream(ByteArrayOutputStream())
+        val byteStream = ByteArrayOutputStream()
+        val out = java.io.DataOutputStream(byteStream)
         out.writeInt(11 * 1024 * 1024)
         out.writeByte(FrameType.PING.typeByte.toInt())
-        val bytes = (out.out as ByteArrayOutputStream).toByteArray()
+        val bytes = byteStream.toByteArray()
         
         val decoded = FrameCodec.decode(ByteArrayInputStream(bytes))
         assertNull(decoded)
@@ -41,11 +42,12 @@ class FrameCodecTest {
 
     @Test
     fun `test decode unknown frame type falls back to UnknownFrame`() {
-        val out = java.io.DataOutputStream(ByteArrayOutputStream())
+        val byteStream = ByteArrayOutputStream()
+        val out = java.io.DataOutputStream(byteStream)
         out.writeInt(5) // length 5
         out.writeByte(99) // unknown type byte 99
         out.write(ByteArray(4)) // dummy payload
-        val bytes = (out.out as ByteArrayOutputStream).toByteArray()
+        val bytes = byteStream.toByteArray()
         
         val decoded = FrameCodec.decode(ByteArrayInputStream(bytes))
         assertTrue(decoded is Frame.UnknownFrame)

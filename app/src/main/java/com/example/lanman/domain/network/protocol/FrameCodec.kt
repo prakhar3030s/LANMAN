@@ -2,10 +2,38 @@ package com.example.lanman.domain.network.protocol
 
 import java.io.DataInputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
 object FrameCodec {
+    /**
+     * Streams a frame directly into [outputStream] with zero intermediate buffer copies
+     * for large file chunks.
+     */
+    fun writeFrame(outputStream: OutputStream, frame: Frame) {
+        if (frame is Frame.FileChunkFrame) {
+            val transferIdBytes = frame.fileTransferId.toByteArray(StandardCharsets.UTF_8)
+            val payloadCapacity = 1 + transferIdBytes.size + 4 + 4 + frame.data.size
+            val frameLength = 1 + payloadCapacity
+            
+            val headerBuffer = ByteBuffer.allocate(4 + 1 + 1 + transferIdBytes.size + 4 + 4)
+            headerBuffer.putInt(frameLength)
+            headerBuffer.put(frame.type.typeByte)
+            headerBuffer.put(transferIdBytes.size.toByte())
+            headerBuffer.put(transferIdBytes)
+            headerBuffer.putInt(frame.chunkIndex)
+            headerBuffer.putInt(frame.data.size)
+            
+            outputStream.write(headerBuffer.array())
+            outputStream.write(frame.data)
+            return
+        }
+
+        val encoded = encode(frame)
+        outputStream.write(encoded)
+    }
+
     fun encode(frame: Frame): ByteArray {
         if (frame is Frame.FileChunkFrame) {
             val transferIdBytes = frame.fileTransferId.toByteArray(StandardCharsets.UTF_8)
@@ -104,7 +132,7 @@ object FrameCodec {
 
     fun decode(inputStream: InputStream): Frame? {
         try {
-            val dataIn = DataInputStream(inputStream)
+            val dataIn = if (inputStream is DataInputStream) inputStream else DataInputStream(inputStream)
             
             // Read 4-byte length
             val length = dataIn.readInt()

@@ -58,12 +58,14 @@ class InMemorySignalProtocolStore(
     override fun containsSignedPreKey(signedPreKeyId: Int): Boolean = signedPreKeys.containsKey(signedPreKeyId)
     override fun removeSignedPreKey(signedPreKeyId: Int) { signedPreKeys.remove(signedPreKeyId) }
 
+    private val kyberPreKeys = mutableMapOf<Int, org.signal.libsignal.protocol.state.KyberPreKeyRecord>()
+
     override fun loadExistingSessions(addresses: MutableList<SignalProtocolAddress>): MutableList<org.signal.libsignal.protocol.state.SessionRecord> = mutableListOf()
     override fun storeSenderKey(address: SignalProtocolAddress, uuid: java.util.UUID, record: org.signal.libsignal.protocol.groups.state.SenderKeyRecord) {}
     override fun loadSenderKey(address: SignalProtocolAddress, uuid: java.util.UUID): org.signal.libsignal.protocol.groups.state.SenderKeyRecord? = null
-    override fun loadKyberPreKey(preKeyId: Int): org.signal.libsignal.protocol.state.KyberPreKeyRecord = throw IllegalStateException("Not implemented")
-    override fun loadKyberPreKeys(): MutableList<org.signal.libsignal.protocol.state.KyberPreKeyRecord> = mutableListOf()
-    override fun storeKyberPreKey(preKeyId: Int, record: org.signal.libsignal.protocol.state.KyberPreKeyRecord) {}
-    override fun containsKyberPreKey(preKeyId: Int): Boolean = false
+    override fun loadKyberPreKey(preKeyId: Int): org.signal.libsignal.protocol.state.KyberPreKeyRecord = kyberPreKeys[preKeyId] ?: throw IllegalStateException("KyberPreKey $preKeyId not found")
+    override fun loadKyberPreKeys(): MutableList<org.signal.libsignal.protocol.state.KyberPreKeyRecord> = kyberPreKeys.values.toMutableList()
+    override fun storeKyberPreKey(preKeyId: Int, record: org.signal.libsignal.protocol.state.KyberPreKeyRecord) { kyberPreKeys[preKeyId] = record }
+    override fun containsKyberPreKey(preKeyId: Int): Boolean = kyberPreKeys.containsKey(preKeyId)
     override fun markKyberPreKeyUsed(preKeyId: Int, usedAt: Int, pubKey: org.signal.libsignal.protocol.ecc.ECPublicKey) {}
 }

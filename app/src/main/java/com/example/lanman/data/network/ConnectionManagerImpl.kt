@@ -34,40 +34,74 @@ class ConnectionManagerImpl(
     private val TAG = "ConnectionManager"
     
     private var scope: CoroutineScope? = null
-    private var serverSocket: ServerSocket? = null
+    private var controlServerSocket: ServerSocket? = null
+    private var dataServerSocket: ServerSocket? = null
     
     private val activeConnections = ConcurrentHashMap<String, ActiveConnection>()
     private val connectMutex = kotlinx.coroutines.sync.Mutex()
+    private val dataConnectMutex = kotlinx.coroutines.sync.Mutex()
     
-    private val _incomingFrames = MutableSharedFlow<IncomingFrameEvent>(extraBufferCapacity = 512)
+    private val _incomingFrames = MutableSharedFlow<IncomingFrameEvent>(extraBufferCapacity = 1024)
     override val incomingFrames: Flow<IncomingFrameEvent> = _incomingFrames.asSharedFlow()
+
+    override fun hasActiveConnection(contactId: String): Boolean {
+        val conn = activeConnections[contactId]
+        return conn != null && !conn.socket.isClosed
+    }
 
     override fun start() {
         if (scope != null) return
-        Log.d(TAG, "Starting ConnectionManager")
+        Log.d(TAG, "Starting ConnectionManager with Dual-Channel Transport")
         
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = newScope
         
+        // 1. Control Channel Listener (Port 47475)
         newScope.launch {
             try {
-                serverSocket = ServerSocket().apply {
+                controlServerSocket = ServerSocket().apply {
                     reuseAddress = true
                     bind(java.net.InetSocketAddress(NetworkConstants.TCP_MESSAGE_PORT))
                 }
-                Log.d(TAG, "TCP Server listening on port ${NetworkConstants.TCP_MESSAGE_PORT}")
+                Log.d(TAG, "Control TCP Server listening on port ${NetworkConstants.TCP_MESSAGE_PORT}")
                 
                 while (isActive) {
-                    val socket = serverSocket?.accept() ?: break
-                    socket.sendBufferSize = 512 * 1024
-                    socket.receiveBufferSize = 512 * 1024
+                    val socket = controlServerSocket?.accept() ?: break
+                    socket.sendBufferSize = NetworkConstants.CONTROL_SOCKET_BUFFER_SIZE
+                    socket.receiveBufferSize = NetworkConstants.CONTROL_SOCKET_BUFFER_SIZE
                     socket.tcpNoDelay = true
-                    Log.d(TAG, "Accepted incoming TCP connection from ${socket.inetAddress.hostAddress}")
-                    launch { handleIncomingConnection(socket) }
+                    socket.keepAlive = true
+                    Log.d(TAG, "Accepted incoming Control TCP connection from ${socket.inetAddress.hostAddress}")
+                    launch { handleIncomingControlConnection(socket) }
                 }
             } catch (e: Exception) {
                 if (isActive) {
-                    Log.e(TAG, "Server socket error", e)
+                    Log.e(TAG, "Control server socket error", e)
+                }
+            }
+        }
+
+        // 2. Data Channel Listener (Port 47476)
+        newScope.launch {
+            try {
+                dataServerSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(NetworkConstants.TCP_DATA_PORT))
+                }
+                Log.d(TAG, "Data TCP Server listening on port ${NetworkConstants.TCP_DATA_PORT}")
+                
+                while (isActive) {
+                    val socket = dataServerSocket?.accept() ?: break
+                    socket.sendBufferSize = NetworkConstants.DATA_SOCKET_BUFFER_SIZE
+                    socket.receiveBufferSize = NetworkConstants.DATA_SOCKET_BUFFER_SIZE
+                    socket.tcpNoDelay = true
+                    socket.keepAlive = true
+                    Log.d(TAG, "Accepted incoming Data TCP connection from ${socket.inetAddress.hostAddress}")
+                    launch { handleIncomingDataConnection(socket) }
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e(TAG, "Data server socket error", e)
                 }
             }
         }
@@ -78,16 +112,19 @@ class ConnectionManagerImpl(
         scope?.cancel()
         scope = null
         
-        serverSocket?.close()
-        serverSocket = null
+        try { controlServerSocket?.close() } catch (e: Exception) {}
+        controlServerSocket = null
+
+        try { dataServerSocket?.close() } catch (e: Exception) {}
+        dataServerSocket = null
         
         activeConnections.values.forEach { 
-            try { it.socket.close() } catch (e: Exception) {} 
+            it.close()
         }
         activeConnections.clear()
     }
 
-    private suspend fun handleIncomingConnection(socket: Socket) {
+    private suspend fun handleIncomingControlConnection(socket: Socket) {
         var contactId: String? = null
         try {
             val inputStream = socket.getInputStream()
@@ -98,14 +135,13 @@ class ConnectionManagerImpl(
             }
             
             if (helloFrame !is Frame.HelloFrame) {
-                Log.w(TAG, "First frame was not HELLO. Closing socket.")
+                Log.w(TAG, "First frame was not HELLO on control channel. Closing socket.")
                 socket.close()
                 return
             }
             
             contactId = helloFrame.contactId
             
-            // Phase 23: Extra defensive check for malformed contactId before hitting the DB
             try {
                 java.util.UUID.fromString(contactId)
             } catch (e: Exception) {
@@ -135,14 +171,14 @@ class ConnectionManagerImpl(
                     val json = org.json.JSONObject(String(existingContact.publicKeyBundle, Charsets.UTF_8))
                     if (!json.has("kyberPreKey")) {
                         Log.d(TAG, "Missing kyberPreKey for incoming $contactId, requesting key bundle")
-                        sendFrameInternal(contactId, connection, Frame.KeyBundleRequestFrame(contactId))
+                        sendFrameInternal(connection, Frame.KeyBundleRequestFrame(contactId))
                     }
                 } catch (e: Exception) {}
             }
             
-            readLoop(contactId, connection, inputStream)
+            readControlLoop(contactId, connection, inputStream)
         } catch (e: Exception) {
-            Log.e(TAG, "Error handling incoming connection", e)
+            Log.e(TAG, "Error handling incoming control connection", e)
         } finally {
             try { socket.close() } catch (e: Exception) {}
             if (contactId != null) {
@@ -152,22 +188,56 @@ class ConnectionManagerImpl(
         }
     }
 
-    private suspend fun readLoop(contactId: String, connection: ActiveConnection, inputStream: InputStream) {
+    private suspend fun handleIncomingDataConnection(socket: Socket) {
+        var contactId: String? = null
+        try {
+            val inputStream = socket.getInputStream()
+            
+            val helloFrame = withTimeoutOrNull(5000L) {
+                FrameCodec.decode(inputStream)
+            }
+            
+            if (helloFrame !is Frame.HelloFrame) {
+                Log.w(TAG, "First frame was not HELLO on data channel. Closing data socket.")
+                socket.close()
+                return
+            }
+            
+            contactId = helloFrame.contactId
+            val connection = activeConnections[contactId]
+            if (connection != null) {
+                connection.setDataConnection(socket)
+                Log.d(TAG, "Attached incoming data connection for $contactId")
+                readDataLoop(contactId, connection, inputStream)
+            } else {
+                Log.w(TAG, "Data connection received from $contactId without active control connection. Reading directly.")
+                val standaloneConnection = ActiveConnection(socket)
+                standaloneConnection.setDataConnection(socket)
+                readDataLoop(contactId, standaloneConnection, inputStream)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling incoming data connection", e)
+        } finally {
+            try { socket.close() } catch (e: Exception) {}
+        }
+    }
+
+    private suspend fun readControlLoop(contactId: String, connection: ActiveConnection, inputStream: InputStream) {
         try {
             while (scope?.isActive == true && !connection.socket.isClosed) {
                 val frame = FrameCodec.decode(inputStream)
                 if (frame == null) {
-                    Log.d(TAG, "EOF or decode error from $contactId")
-                    break // EOF or error
+                    Log.d(TAG, "EOF or decode error from $contactId on control channel")
+                    break
                 }
                 
                 when (frame) {
                     is Frame.PingFrame -> {
                         Log.d(TAG, "Received PING from $contactId, sending PONG")
-                        sendFrameInternal(contactId, connection, Frame.PongFrame)
+                        sendFrameInternal(connection, Frame.PongFrame)
                     }
                     is Frame.UnknownFrame -> {
-                        Log.d(TAG, "Ignoring unknown frame type (forward compatibility) from $contactId")
+                        Log.d(TAG, "Ignoring unknown frame type from $contactId")
                     }
                     else -> {
                         val event = IncomingFrameEvent(
@@ -175,26 +245,51 @@ class ConnectionManagerImpl(
                             frame = frame,
                             isUnknown = connection.isUnknown,
                             unknownDisplayName = connection.unknownDisplayName,
-                            unknownIdentityKey = connection.unknownIdentityKey
+                            unknownIdentityKey = connection.unknownIdentityKey,
+                            isDataChannel = false
                         )
                         _incomingFrames.emit(event)
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error in read loop for $contactId", e)
+            Log.e(TAG, "Error in control read loop for $contactId", e)
+        }
+    }
+
+    private suspend fun readDataLoop(contactId: String, connection: ActiveConnection, inputStream: InputStream) {
+        try {
+            while (scope?.isActive == true && connection.dataSocket?.isClosed == false) {
+                val frame = FrameCodec.decode(inputStream)
+                if (frame == null) {
+                    Log.d(TAG, "EOF or decode error from $contactId on data channel")
+                    break
+                }
+                
+                val event = IncomingFrameEvent(
+                    contactId = contactId,
+                    frame = frame,
+                    isUnknown = connection.isUnknown,
+                    unknownDisplayName = connection.unknownDisplayName,
+                    unknownIdentityKey = connection.unknownIdentityKey,
+                    isDataChannel = true
+                )
+                _incomingFrames.emit(event)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in data read loop for $contactId", e)
         }
     }
 
     override suspend fun connectTo(contactId: String): Result<Unit> {
         connectMutex.withLock {
             return try {
-                if (activeConnections.containsKey(contactId)) {
-                    Log.d(TAG, "reusing existing connection to $contactId")
+                val existing = activeConnections[contactId]
+                if (existing != null && !existing.socket.isClosed) {
                     return Result.success(Unit)
                 }
                 
-                Log.d(TAG, "opening new connection to $contactId")
+                Log.d(TAG, "Opening new control connection to $contactId")
                 
                 val contact = contactRepository.getContactById(contactId).firstOrNull() 
                     ?: return Result.failure(Exception("Contact not found"))
@@ -206,13 +301,14 @@ class ConnectionManagerImpl(
                     ?: return Result.failure(Exception("Profile not found"))
 
                 val socket = Socket(ip, NetworkConstants.TCP_MESSAGE_PORT)
-                socket.sendBufferSize = 512 * 1024
-                socket.receiveBufferSize = 512 * 1024
+                socket.sendBufferSize = NetworkConstants.CONTROL_SOCKET_BUFFER_SIZE
+                socket.receiveBufferSize = NetworkConstants.CONTROL_SOCKET_BUFFER_SIZE
                 socket.tcpNoDelay = true
+                socket.keepAlive = true
                 
                 val connection = ActiveConnection(socket)
                 
-                // Immediately send HELLO
+                // Send HELLO
                 var myIdentityKey = ""
                 myProfile.publicKeyBundle?.let { bytes ->
                     try {
@@ -220,7 +316,7 @@ class ConnectionManagerImpl(
                         myIdentityKey = json.optString("identityKey", "")
                     } catch (e: Exception) {}
                 }
-                sendFrameInternal(contactId, connection, Frame.HelloFrame(myProfile.id, myProfile.displayName, myIdentityKey))
+                sendFrameInternal(connection, Frame.HelloFrame(myProfile.id, myProfile.displayName, myIdentityKey))
                 
                 activeConnections[contactId] = connection
                 
@@ -229,14 +325,14 @@ class ConnectionManagerImpl(
                         val json = org.json.JSONObject(String(contact.publicKeyBundle, Charsets.UTF_8))
                         if (!json.has("kyberPreKey")) {
                             Log.d(TAG, "Missing kyberPreKey for outbound $contactId, requesting key bundle")
-                            sendFrameInternal(contactId, connection, Frame.KeyBundleRequestFrame(contactId))
+                            sendFrameInternal(connection, Frame.KeyBundleRequestFrame(contactId))
                         }
                     } catch (e: Exception) {}
                 }
                 
                 scope?.launch {
                     try {
-                        readLoop(contactId, connection, socket.getInputStream())
+                        readControlLoop(contactId, connection, socket.getInputStream())
                     } finally {
                         try { socket.close() } catch (e: Exception) {}
                         activeConnections.remove(contactId)
@@ -252,7 +348,76 @@ class ConnectionManagerImpl(
         }
     }
 
+    override suspend fun connectDataChannelTo(contactId: String): Result<Unit> {
+        dataConnectMutex.withLock {
+            return try {
+                val connection = activeConnections[contactId] 
+                    ?: run {
+                        val connectRes = connectTo(contactId)
+                        if (connectRes.isFailure) return connectRes
+                        activeConnections[contactId] ?: return Result.failure(Exception("No connection found"))
+                    }
+
+                if (connection.dataSocket != null && connection.dataSocket?.isClosed == false) {
+                    return Result.success(Unit)
+                }
+
+                val contact = contactRepository.getContactById(contactId).firstOrNull()
+                    ?: return Result.failure(Exception("Contact not found"))
+                val ip = contact.lastKnownIp ?: return Result.failure(Exception("No known IP"))
+                val myProfile = profileRepository.getProfile().firstOrNull()
+                    ?: return Result.failure(Exception("Profile not found"))
+
+                Log.d(TAG, "Opening high-speed Data Channel socket to $contactId ($ip:${NetworkConstants.TCP_DATA_PORT})")
+                val dataSocket = Socket(ip, NetworkConstants.TCP_DATA_PORT)
+                dataSocket.sendBufferSize = NetworkConstants.DATA_SOCKET_BUFFER_SIZE
+                dataSocket.receiveBufferSize = NetworkConstants.DATA_SOCKET_BUFFER_SIZE
+                dataSocket.tcpNoDelay = true
+                dataSocket.keepAlive = true
+
+                connection.setDataConnection(dataSocket)
+
+                // Handshake on data socket
+                var myIdentityKey = ""
+                myProfile.publicKeyBundle?.let { bytes ->
+                    try {
+                        val json = org.json.JSONObject(String(bytes, Charsets.UTF_8))
+                        myIdentityKey = json.optString("identityKey", "")
+                    } catch (e: Exception) {}
+                }
+                
+                connection.dataWriteMutex.withLock {
+                    connection.dataOutputStream?.let { out ->
+                        FrameCodec.writeFrame(out, Frame.HelloFrame(myProfile.id, myProfile.displayName, myIdentityKey))
+                        out.flush()
+                    }
+                }
+
+                scope?.launch {
+                    try {
+                        readDataLoop(contactId, connection, dataSocket.getInputStream())
+                    } finally {
+                        try { dataSocket.close() } catch (e: Exception) {}
+                        connection.dataSocket = null
+                        connection.dataOutputStream = null
+                        Log.d(TAG, "Data channel closed for $contactId")
+                    }
+                }
+
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to connect data channel to $contactId: ${e.message}")
+                Result.failure(e)
+            }
+        }
+    }
+
     override suspend fun sendFrame(contactId: String, frame: Frame, flush: Boolean): Result<Unit> {
+        // Forward high-volume chunk frames to dedicated data channel if applicable
+        if (frame is Frame.FileChunkFrame || frame is Frame.FileCompleteFrame) {
+            return sendDataFrame(contactId, frame, flush)
+        }
+
         var connection = activeConnections[contactId]
         
         if (connection == null || connection.socket.isClosed) {
@@ -264,7 +429,7 @@ class ConnectionManagerImpl(
         }
         
         return try {
-            sendFrameInternal(contactId, connection, frame, flush)
+            sendFrameInternal(connection, frame, flush)
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send frame to $contactId", e)
@@ -273,11 +438,54 @@ class ConnectionManagerImpl(
             Result.failure(e)
         }
     }
+
+    override suspend fun sendDataFrame(contactId: String, frame: Frame, flush: Boolean): Result<Unit> {
+        var connection = activeConnections[contactId]
+        if (connection == null || connection.socket.isClosed) {
+            val connectResult = connectTo(contactId)
+            if (connectResult.isFailure) return connectResult
+            connection = activeConnections[contactId]
+                ?: return Result.failure(Exception("Failed to acquire connection"))
+        }
+
+        // Try connecting Data Channel if not already active
+        if (connection.dataSocket == null || connection.dataSocket?.isClosed == true) {
+            connectDataChannelTo(contactId)
+        }
+
+        val dataStream = connection.dataOutputStream
+        if (dataStream != null && connection.dataSocket?.isClosed == false) {
+            return try {
+                connection.dataWriteMutex.withLock {
+                    FrameCodec.writeFrame(dataStream, frame)
+                    if (flush) {
+                        dataStream.flush()
+                    }
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.w(TAG, "Data channel send failed, falling back to control channel: ${e.message}")
+                // Fallback to control channel below
+                sendFrameFallback(connection, frame, flush)
+            }
+        }
+
+        // Fallback to control channel if data channel unavailable
+        return sendFrameFallback(connection, frame, flush)
+    }
+
+    private suspend fun sendFrameFallback(connection: ActiveConnection, frame: Frame, flush: Boolean): Result<Unit> {
+        return try {
+            sendFrameInternal(connection, frame, flush)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
     
-    private suspend fun sendFrameInternal(contactId: String, connection: ActiveConnection, frame: Frame, flush: Boolean = true) {
-        val bytes = FrameCodec.encode(frame)
+    private suspend fun sendFrameInternal(connection: ActiveConnection, frame: Frame, flush: Boolean = true) {
         connection.writeMutex.withLock {
-            connection.outputStream.write(bytes)
+            FrameCodec.writeFrame(connection.outputStream, frame)
             if (flush) {
                 connection.outputStream.flush()
             }
@@ -287,12 +495,8 @@ class ConnectionManagerImpl(
     override fun disconnectFrom(contactId: String) {
         val connection = activeConnections.remove(contactId)
         if (connection != null) {
-            try {
-                connection.socket.close()
-                Log.d(TAG, "Explicitly disconnected from $contactId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing connection to $contactId", e)
-            }
+            connection.close()
+            Log.d(TAG, "Explicitly disconnected from $contactId")
         }
     }
 }

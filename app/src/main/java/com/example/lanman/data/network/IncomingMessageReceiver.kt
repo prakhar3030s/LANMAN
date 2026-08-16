@@ -25,8 +25,12 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+
 @Singleton
 class IncomingMessageReceiver @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val connectionManager: ConnectionManager,
     private val messageRepository: MessageRepository,
     private val fileTransferRepository: FileTransferRepository,
@@ -125,13 +129,12 @@ class IncomingMessageReceiver @Inject constructor(
             messageRepository.updateMessageStatus(frame.messageId, MessageStatus.DELIVERED)
             Log.d(TAG, "Message ${frame.messageId} marked as DELIVERED from $contactId")
             
-            if (existing.type == MessageType.FILE && existing.direction == MessageDirection.OUTGOING) {
-                // Sender-side cleanup: once delivered, delete the local encrypted temp file
+            if ((existing.type == MessageType.FILE || existing.type == MessageType.VOICE) && existing.direction == MessageDirection.OUTGOING) {
                 val fileTransfer = fileTransferRepository.getByMessageId(frame.messageId).firstOrNull()
                 if (fileTransfer != null) {
-                    val file = java.io.File(fileTransfer.localUri)
-                    if (file.exists() && file.delete()) {
-                        Log.d(TAG, "Deleted local encrypted temp file for delivered transfer ${fileTransfer.id}")
+                    val keyFile = java.io.File(java.io.File(context.filesDir, "transfer_keys"), fileTransfer.id)
+                    if (keyFile.exists()) {
+                        keyFile.delete()
                     }
                 }
             }

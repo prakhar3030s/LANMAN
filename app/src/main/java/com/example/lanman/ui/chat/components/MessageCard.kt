@@ -39,6 +39,10 @@ import android.net.Uri
 import coil.compose.AsyncImage
 import java.io.File
 
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.ui.text.font.FontWeight
+
 @Composable
 fun MessageCard(
     uiModel: MessageUiModel,
@@ -71,26 +75,40 @@ fun MessageCard(
         Modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = {
-                    val file = File(uiModel.fileTransfer.localUri)
-                    if (file.exists()) {
-                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    try {
+                        val uri = if (uiModel.fileTransfer.localUri.startsWith("content://")) {
+                            android.net.Uri.parse(uiModel.fileTransfer.localUri)
+                        } else {
+                            val file = File(uiModel.fileTransfer.localUri)
+                            if (!file.exists()) return@detectTapGestures
+                            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                        }
                         val intent = Intent(Intent.ACTION_VIEW).apply {
                             setDataAndType(uri, uiModel.fileTransfer.mimeType)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(intent, "Open File"))
+                    } catch (e: Exception) {
+                        android.util.Log.e("MessageCard", "Failed to open file", e)
                     }
                 },
                 onLongPress = {
-                    val file = File(uiModel.fileTransfer.localUri)
-                    if (file.exists()) {
-                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    try {
+                        val uri = if (uiModel.fileTransfer.localUri.startsWith("content://")) {
+                            android.net.Uri.parse(uiModel.fileTransfer.localUri)
+                        } else {
+                            val file = File(uiModel.fileTransfer.localUri)
+                            if (!file.exists()) return@detectTapGestures
+                            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                        }
                         val intent = Intent(Intent.ACTION_SEND).apply {
                             type = uiModel.fileTransfer.mimeType
                             putExtra(Intent.EXTRA_STREAM, uri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(intent, "Share File"))
+                    } catch (e: Exception) {
+                        android.util.Log.e("MessageCard", "Failed to share file", e)
                     }
                 }
             )
@@ -113,17 +131,30 @@ fun MessageCard(
             tint = baseTint
         ) {
             Column(
-                modifier = Modifier.padding(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 12.dp)
+                modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 10.dp)
             ) {
                 // Content
-                if (message.type == MessageType.FILE) {
+                val isFile = message.type == MessageType.FILE
+                val isVoice = message.type == MessageType.VOICE
+
+                if (isFile || isVoice) {
                     val fileTransfer = uiModel.fileTransfer
                     if (fileTransfer != null) {
-                        val isImageOrVideo = fileTransfer.mimeType.startsWith("image/") || fileTransfer.mimeType.startsWith("video/")
+                        val isVideo = fileTransfer.mimeType.startsWith("video/")
+                        val isImage = fileTransfer.mimeType.startsWith("image/")
+                        val isMedia = isVideo || isImage
                         
-                        Box(contentAlignment = Alignment.Center) {
-                            if (isImageOrVideo) {
-                                val context = androidx.compose.ui.platform.LocalContext.current
+                        val progressVal = (if (message.status == MessageStatus.SENT) 1f else uiModel.progress ?: 0f).coerceIn(0f, 1f)
+
+                        if (isMedia) {
+                            // Telegram-style Media Card (Video / Image)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 160.dp, max = 220.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 val imageModel: Any = if (fileTransfer.thumbnailUri != null) {
                                     if (fileTransfer.thumbnailUri.startsWith("content://")) {
                                         android.net.Uri.parse(fileTransfer.thumbnailUri)
@@ -137,7 +168,7 @@ fun MessageCard(
                                 val imageRequest = coil.request.ImageRequest.Builder(context)
                                     .data(imageModel)
                                     .apply {
-                                        if (fileTransfer.mimeType.startsWith("video/")) {
+                                        if (isVideo) {
                                             decoderFactory(coil.decode.VideoFrameDecoder.Factory())
                                         }
                                     }
@@ -147,51 +178,171 @@ fun MessageCard(
                                 AsyncImage(
                                     model = imageRequest,
                                     contentDescription = fileTransfer.fileName,
-                                    modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp).clip(RoundedCornerShape(8.dp)),
+                                    modifier = Modifier.matchParentSize(),
                                     contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                 )
-                            } else {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Info, 
-                                        contentDescription = "File", 
-                                        tint = textColor,
-                                        modifier = Modifier.size(32.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column {
-                                        Text(
-                                            text = fileTransfer.fileName,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = textColor,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = textColor.copy(alpha = 0.7f)
+
+                                if (!isConfirmed) {
+                                    // Progress Ring Overlay (While uploading or downloading)
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .background(Color.Black.copy(alpha = 0.45f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(54.dp)
+                                                .background(Color.Black.copy(alpha = 0.65f), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(
+                                                progress = progressVal,
+                                                modifier = Modifier.size(44.dp),
+                                                color = ElectricCyan,
+                                                trackColor = Color.White.copy(alpha = 0.25f),
+                                                strokeWidth = 3.5.dp
+                                            )
+                                            if (isVideo) {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlayArrow,
+                                                    contentDescription = "Video",
+                                                    tint = Color.White.copy(alpha = 0.85f),
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (isVideo) {
+                                    // Translucent Play Button overlay for Completed Video
+                                    Box(
+                                        modifier = Modifier
+                                            .size(54.dp)
+                                            .background(Color.Black.copy(alpha = 0.55f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PlayArrow,
+                                            contentDescription = "Play Video",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(34.dp)
                                         )
                                     }
                                 }
-                            }
-                            
-                            // Progress Overlay
-                            if (uiModel.progress != null && !isConfirmed) {
+
+                                // Bottom-left file size pill
                                 Box(
-                                    modifier = Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp)),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .padding(8.dp)
+                                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        } else if (isVoice) {
+                            if (!isConfirmed) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().padding(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(CircleShape)
+                                            .background(ElectricCyan.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            progress = progressVal,
+                                            modifier = Modifier.size(36.dp),
+                                            color = ElectricCyan,
+                                            trackColor = Color.White.copy(alpha = 0.2f),
+                                            strokeWidth = 3.dp
+                                        )
+                                        Text("🎙", style = MaterialTheme.typography.titleSmall)
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text("Voice message...", style = MaterialTheme.typography.bodyMedium, color = textColor)
+                                }
+                            } else {
+                                val durationMs = String(message.content, StandardCharsets.UTF_8).removePrefix("voice:").toLongOrNull() ?: 0L
+                                val audioFile = if (isOutgoing && fileTransfer.thumbnailUri != null) {
+                                    File(fileTransfer.thumbnailUri)
+                                } else {
+                                    File(fileTransfer.localUri)
+                                }
+                                VoicePlayer(
+                                    audioFile = audioFile,
+                                    durationMs = durationMs,
+                                    textColor = textColor
+                                )
+                            }
+                        } else {
+                            // Telegram-style Document / Generic File Card
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(ElectricCyan.copy(alpha = 0.15f)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    CircularProgressIndicator(
-                                        progress = { uiModel.progress },
-                                        color = ElectricCyan,
-                                        trackColor = Color.White.copy(alpha = 0.2f)
+                                    if (!isConfirmed) {
+                                        CircularProgressIndicator(
+                                            progress = progressVal,
+                                            modifier = Modifier.size(36.dp),
+                                            color = ElectricCyan,
+                                            trackColor = Color.White.copy(alpha = 0.2f),
+                                            strokeWidth = 3.dp
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = "Transferring",
+                                            tint = ElectricCyan,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = "File",
+                                            tint = ElectricCyan,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
+                                }
+                                
+                                Spacer(modifier = Modifier.width(12.dp))
+                                
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = fileTransfer.fileName,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                        color = textColor,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = textColor.copy(alpha = 0.7f)
                                     )
                                 }
                             }
                         }
                     } else {
-                        Text("Loading file info...", color = textColor)
+                        Text("Loading transfer info...", color = textColor)
                     }
                 } else {
                     Text(

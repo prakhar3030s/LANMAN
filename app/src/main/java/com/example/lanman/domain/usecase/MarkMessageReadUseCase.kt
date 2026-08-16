@@ -17,8 +17,8 @@ class MarkMessageReadUseCase @Inject constructor(
     suspend operator fun invoke(messageId: String) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val message = messageRepository.getMessageById(messageId) ?: return@withContext
 
-        // Only mark incoming messages as read, and only if they aren't already marked
-        if (message.direction == MessageDirection.INCOMING && message.status != MessageStatus.READ) {
+        // Only mark incoming messages as read once they have been delivered, and only if they aren't already marked
+        if (message.direction == MessageDirection.INCOMING && message.status == MessageStatus.DELIVERED) {
             // Optimistically update local status
             messageRepository.updateMessageStatus(messageId, MessageStatus.READ)
             Log.d(TAG, "Message $messageId marked as READ locally")

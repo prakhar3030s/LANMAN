@@ -18,7 +18,10 @@ import com.example.lanman.domain.model.MessageType
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index(value = ["contactId"])]
+    indices = [
+        Index(value = ["contactId", "timestamp"]),
+        Index(value = ["status", "direction", "contactId"])
+    ]
 )
 data class MessageEntity(
     @PrimaryKey val id: String,

@@ -27,9 +27,8 @@ object DatabaseModule {
         return Room.databaseBuilder(
             context,
             LocalLinkDatabase::class.java,
-            "locallink_db"
+            "local_link_db"
         )
-        // WARNING: MUST BE REPLACED WITH REAL MIGRATION IN PRODUCTION V2
         .fallbackToDestructiveMigration()
         .build()
     }

@@ -26,6 +26,9 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+import java.io.BufferedOutputStream
+import com.example.lanman.util.network.NetworkConstants
+
 @Singleton
 class FileTransferReceiver @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -46,7 +49,7 @@ class FileTransferReceiver @Inject constructor(
         val mimeType: String,
         val aesKey: ByteArray,
         val baseNonce: ByteArray,
-        val outputStream: FileOutputStream,
+        val outputStream: BufferedOutputStream,
         val destinationFile: File,
         val senderTimestamp: Long,
         var bytesReceived: Long = 0
@@ -58,7 +61,9 @@ class FileTransferReceiver @Inject constructor(
         if (job != null) return
         
         job = scope.launch(Dispatchers.IO) {
-            connectionManager.incomingFrames.collect { (contactId, frame) ->
+            connectionManager.incomingFrames.collect { event ->
+                val contactId = event.contactId
+                val frame = event.frame
                 when (frame) {
                     is Frame.FileOfferFrame -> handleFileOffer(contactId, frame)
                     is Frame.FileChunkFrame -> handleFileChunk(contactId, frame)
@@ -97,12 +102,12 @@ class FileTransferReceiver @Inject constructor(
         val aesKey = keyAndNonce.copyOfRange(0, 32)
         val baseNonce = keyAndNonce.copyOfRange(32, 44)
         
-        // Prepare output file
+        // Prepare output file with 256 KB buffered writer
         val receivedDir = File(context.filesDir, "received_files")
         if (!receivedDir.exists()) receivedDir.mkdirs()
         
-        val destinationFile = File(receivedDir, frame.fileName) // TODO: Handle filename collisions securely in future
-        val outputStream = FileOutputStream(destinationFile)
+        val destinationFile = File(receivedDir, frame.fileName)
+        val outputStream = BufferedOutputStream(FileOutputStream(destinationFile), NetworkConstants.FILE_STREAM_BUFFER_SIZE)
         
         activeTransfers[frame.fileTransferId] = ActiveTransferState(
             messageId = frame.messageId,
@@ -117,13 +122,23 @@ class FileTransferReceiver @Inject constructor(
             senderTimestamp = frame.senderTimestamp
         )
         
+        val isVoice = frame.mimeType.startsWith("audio/lanman-voice")
+        val messageType = if (isVoice) com.example.lanman.domain.model.MessageType.VOICE else com.example.lanman.domain.model.MessageType.FILE
+        
+        var messageContent = "File: ${frame.fileName}".toByteArray(Charsets.UTF_8)
+        if (isVoice) {
+            // Extract duration from "audio/lanman-voice;duration=12400"
+            val durationMs = frame.mimeType.substringAfter("duration=", "0")
+            messageContent = "voice:$durationMs".toByteArray(Charsets.UTF_8)
+        }
+
         // Insert PENDING message so UI can show progress circle
         val message = com.example.lanman.domain.model.Message(
             id = frame.messageId,
             contactId = contactId,
             direction = com.example.lanman.domain.model.MessageDirection.INCOMING,
-            type = com.example.lanman.domain.model.MessageType.FILE,
-            content = "File: ${frame.fileName}".toByteArray(Charsets.UTF_8),
+            type = messageType,
+            content = messageContent,
             status = com.example.lanman.domain.model.MessageStatus.PENDING,
             timestamp = frame.senderTimestamp
         )
@@ -188,6 +203,7 @@ class FileTransferReceiver @Inject constructor(
             // Mark message as DELIVERED
             messageRepository.updateMessageStatus(state.messageId, com.example.lanman.domain.model.MessageStatus.DELIVERED)
             
+            progressTracker.clearProgress(frame.fileTransferId)
             Log.d(TAG, "Successfully received and persisted complete file transfer ${frame.fileTransferId}")
             
         } catch (e: Exception) {

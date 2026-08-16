@@ -1,4 +1,4 @@
-﻿package com.example.lanman.ui.chat
+package com.example.lanman.ui.chat
 
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
@@ -18,6 +18,7 @@ import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.usecase.MarkMessageReadUseCase
 import com.example.lanman.domain.usecase.SendFileUseCase
 import com.example.lanman.domain.usecase.SendMessageUseCase
+import com.example.lanman.domain.usecase.SendVoiceMessageUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -43,32 +44,25 @@ class ConversationViewModel @Inject constructor(
     private val activeConversationTracker: ActiveConversationTracker,
     private val sendMessageUseCase: SendMessageUseCase,
     private val sendFileUseCase: SendFileUseCase,
+    private val sendVoiceMessageUseCase: SendVoiceMessageUseCase,
     private val markMessageReadUseCase: MarkMessageReadUseCase
 ) : ViewModel() {
 
     private val contactId: String = checkNotNull(savedStateHandle["contactId"])
 
-    private val progressMapFlow = progressTracker.progress
-        .scan(emptyMap<String, Float>()) { map, progressUpdate ->
-            val percentage = if (progressUpdate.totalBytes > 0) {
-                progressUpdate.bytesTransferred.toFloat() / progressUpdate.totalBytes.toFloat()
-            } else 0f
-            map + (progressUpdate.fileTransferId to percentage)
-        }
-
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val messages: StateFlow<List<MessageUiModel>> = messageRepository.getMessagesForContact(contactId)
         .flatMapLatest { msgs ->
-            val fileMessageIds = msgs.filter { it.type == MessageType.FILE }.map { it.id }
+            val fileMessageIds = msgs.filter { it.type == MessageType.FILE || it.type == MessageType.VOICE }.map { it.id }
             if (fileMessageIds.isEmpty()) {
-                kotlinx.coroutines.flow.combine(kotlinx.coroutines.flow.flowOf(emptyList<com.example.lanman.domain.model.FileTransfer>()), progressMapFlow) { _, progressMap ->
+                kotlinx.coroutines.flow.combine(kotlinx.coroutines.flow.flowOf(emptyList<com.example.lanman.domain.model.FileTransfer>()), progressTracker.progressMap) { _, _ ->
                     msgs.map { MessageUiModel(it, null, null) }
                 }
             } else {
-                kotlinx.coroutines.flow.combine(fileTransferRepository.getByMessageIds(fileMessageIds), progressMapFlow) { transfers, progressMap ->
+                kotlinx.coroutines.flow.combine(fileTransferRepository.getByMessageIds(fileMessageIds), progressTracker.progressMap) { transfers, progressMap ->
                     val transferMap = transfers.associateBy { it.messageId }
                     msgs.map { msg ->
-                        if (msg.type == MessageType.FILE) {
+                        if (msg.type == MessageType.FILE || msg.type == MessageType.VOICE) {
                             val transfer = transferMap[msg.id]
                             val progress = transfer?.let { progressMap[it.id] }
                             MessageUiModel(msg, transfer, progress)
@@ -126,6 +120,17 @@ class ConversationViewModel @Inject constructor(
         }
     }
 
+    fun sendVoiceMessage(uri: Uri, durationMs: Long) {
+        viewModelScope.launch {
+            try {
+                sendVoiceMessageUseCase(contactId, uri, durationMs)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorFlow.emit("Failed to send voice message: ${e.message}")
+            }
+        }
+    }
+
     fun markAsRead(messageId: String) {
         viewModelScope.launch {
             markMessageReadUseCase(messageId)
@@ -135,7 +140,7 @@ class ConversationViewModel @Inject constructor(
     fun onMessagesVisible(visibleMessages: List<MessageUiModel>) {
         visibleMessages.forEach { uiModel ->
             val msg = uiModel.message
-            if (msg.direction == MessageDirection.INCOMING && msg.status != MessageStatus.READ) {
+            if (msg.direction == MessageDirection.INCOMING && msg.status == MessageStatus.DELIVERED) {
                 markAsRead(msg.id)
             }
         }

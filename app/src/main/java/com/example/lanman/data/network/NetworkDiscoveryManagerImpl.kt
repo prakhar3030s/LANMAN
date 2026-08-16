@@ -102,8 +102,14 @@ class NetworkDiscoveryManagerImpl(
         multicastLock = null
     }
 
+    private var cachedBroadcastAddresses: List<InetAddress>? = null
+    private var lastBroadcastLookupTime: Long = 0L
+
     private suspend fun startBroadcaster(myId: String) {
         val payloadBytes = HeartbeatCodec.encode(myId)
+        
+        // Fast-Burst Discovery on startup: Send 3 packets 200ms apart for sub-300ms discovery
+        var burstCount = 0
         
         while (scope?.isActive == true) {
             try {
@@ -123,7 +129,6 @@ class NetworkDiscoveryManagerImpl(
                             NetworkConstants.UDP_DISCOVERY_PORT
                         )
                         broadcasterSocket?.send(packet)
-                        Log.d(TAG, "Sent heartbeat packet to $broadcastAddress")
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to send heartbeat to $broadcastAddress", e)
                     }
@@ -132,11 +137,16 @@ class NetworkDiscoveryManagerImpl(
                 // Socket was closed, likely from stopDiscovery. Ignore.
             } catch (e: Exception) {
                 Log.e(TAG, "Error in UDP broadcaster", e)
-                broadcasterSocket?.close()
+                try { broadcasterSocket?.close() } catch (ex: Exception) {}
                 broadcasterSocket = null
             }
             
-            delay(NetworkConstants.HEARTBEAT_INTERVAL_MS)
+            if (burstCount < NetworkConstants.FAST_DISCOVERY_BURST_COUNT) {
+                burstCount++
+                delay(NetworkConstants.FAST_DISCOVERY_BURST_DELAY_MS)
+            } else {
+                delay(NetworkConstants.HEARTBEAT_INTERVAL_MS)
+            }
         }
     }
 
@@ -181,6 +191,12 @@ class NetworkDiscoveryManagerImpl(
     }
 
     private fun getBroadcastAddresses(): List<InetAddress> {
+        val now = System.currentTimeMillis()
+        val cached = cachedBroadcastAddresses
+        if (cached != null && (now - lastBroadcastLookupTime) < 30_000L) {
+            return cached
+        }
+
         val addresses = mutableListOf<InetAddress>()
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
@@ -207,6 +223,9 @@ class NetworkDiscoveryManagerImpl(
                 // Ignore
             }
         }
+
+        cachedBroadcastAddresses = addresses
+        lastBroadcastLookupTime = now
         return addresses
     }
 }
