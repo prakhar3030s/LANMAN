@@ -67,7 +67,7 @@ fun OnboardingScreen(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "LocalLink",
+                text = "LANMAN",
                 style = MaterialTheme.typography.displaySmall.copy(fontWeight = FontWeight.Bold),
                 color = TextPrimary
             )

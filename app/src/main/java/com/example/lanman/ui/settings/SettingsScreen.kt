@@ -184,7 +184,7 @@ fun SettingsScreen(
                     SettingsItem(
                         icon = Icons.Default.Info,
                         title = "Version",
-                        subtitle = "1.0.0 (LocalLink Build)",
+                        subtitle = "1.0.0 (LANMAN Build)",
                         onClick = {}
                     )
                 }

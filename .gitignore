@@ -6,6 +6,7 @@
 *.aab
 *.dex
 *.class
+.freebuff/
 
 # ====================================================================
 # Build and Output Directories
@@ -28,13 +29,57 @@ kotlin-js-store/
 # ====================================================================
 # Local Configuration & Sensitive Files (DO NOT COMMIT)
 # ====================================================================
+# Machine-specific SDK/signing paths and real signing credentials.
 local.properties
 keystore.properties
 secrets.properties
+api_keys.properties
+api-keys.properties
+
+# Signing keys / certificates: never publish your private key material.
 *.jks
 *.keystore
+*.bks
 *.p12
+*.pfx
+*.p8
+*.key
 *.pem
+*.der
+*.cer
+*.csr
+
+# ====================================================================
+# Environment Variable Files (never commit real values)
+# ====================================================================
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.example.*
+!.env.*.example
+
+# ====================================================================
+# Cloud / Service Credentials
+# ====================================================================
+# Firebase/Google configs carry API keys and should be injected at build
+# time (CI secret or local file), not checked in.
+google-services.json
+firebase-admin*.json
+service-account*.json
+service_account*.json
+credentials*.json
+secrets.json
+secrets.xml
+
+# ====================================================================
+# Local Backups of Config/Key Files
+# ====================================================================
+*.bak
+*.backup
+*.orig
+*.rej
 
 # ====================================================================
 # Android Studio / IntelliJ IDEA Files
@@ -60,9 +105,11 @@ ehthumbs.db
 .vscode/
 
 # ====================================================================
-# Log Files
+# Log Files & Crash Dumps
 # ====================================================================
 *.log
+*.hprof
+hs_err_pid*
 
 # ====================================================================
 # Local Scratch & One-off Test Scripts

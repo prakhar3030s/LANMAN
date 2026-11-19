@@ -83,7 +83,9 @@ class IncomingMessageReceiver @Inject constructor(
         }
         val plaintext = decryptResult.getOrThrow()
 
-        if (event.isUnknown) {
+        // A connection is flagged unknown when it opened, but the user can accept the request
+        // while it is still open, so re-check the contact table before treating it as unknown.
+        if (event.isUnknown && contactRepository.getContactById(contactId).firstOrNull() == null) {
             val displayName = event.unknownDisplayName ?: "Unknown"
             val identityKey = event.unknownIdentityKey ?: ""
             val request = MessageRequest(
@@ -166,9 +168,13 @@ class IncomingMessageReceiver @Inject constructor(
             
             if (contact.publicKeyBundle != null) {
                 val savedJson = org.json.JSONObject(String(contact.publicKeyBundle, Charsets.UTF_8))
-                val savedIdentityKey = savedJson.optString("identityKey", null)
+                val savedIdentityKey = savedJson.optString("identityKey", "")
+                // An accepted message request starts with an identity-key-only bundle; in that
+                // case there is nothing to compare against yet, so adopt the full bundle.
+                val identityMatches = incomingIdentityKey != null &&
+                    (savedIdentityKey.isBlank() || incomingIdentityKey == savedIdentityKey)
                 
-                if (incomingIdentityKey != null && incomingIdentityKey == savedIdentityKey) {
+                if (identityMatches) {
                     contactRepository.upsertContact(contact.copy(publicKeyBundle = frame.bundle))
                     Log.d(TAG, "Successfully received and verified full key bundle for $contactId")
                 } else {

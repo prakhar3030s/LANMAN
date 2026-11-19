@@ -59,6 +59,7 @@ fun VoiceRecordButton(
 
     var mediaRecorder: MediaRecorder? by remember { mutableStateOf(null) }
     var outputFile: File? by remember { mutableStateOf(null) }
+    val recordingsDir = remember { File(context.cacheDir, "voice_recordings").apply { mkdirs() } }
 
     fun startRecording() {
         if (!hasPermission) {
@@ -66,27 +67,32 @@ fun VoiceRecordButton(
             return
         }
 
-        outputFile = File(context.cacheDir, "voice_recording_${System.currentTimeMillis()}.m4a")
+        // Record into the directory declared as a FileProvider cache root in file_paths.xml.
+        outputFile = File(recordingsDir, "voice_recording_${System.currentTimeMillis()}.m4a")
         
-        mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(context)
         } else {
             MediaRecorder()
-        }.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setOutputFile(outputFile!!.absolutePath)
-            
-            try {
-                prepare()
-                start()
-                isRecording = true
-                recordingDurationMs = 0L
-                dragOffset = 0f
-            } catch (e: Exception) {
-                Log.e("VoiceRecordButton", "Failed to start recording", e)
-            }
+        }
+        mediaRecorder = recorder
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setOutputFile(outputFile!!.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            isRecording = true
+            recordingDurationMs = 0L
+            dragOffset = 0f
+        } catch (e: Exception) {
+            Log.e("VoiceRecordButton", "Failed to start recording", e)
+            try { recorder.release() } catch (releaseError: Exception) {}
+            mediaRecorder = null
+            outputFile?.delete()
+            outputFile = null
+            isRecording = false
         }
     }
 
@@ -113,6 +119,19 @@ fun VoiceRecordButton(
             }
             outputFile = null
             dragOffset = 0f
+        }
+    }
+
+    // Never leave the microphone (and its file) open if the screen goes away mid-recording.
+    DisposableEffect(Unit) {
+        onDispose {
+            try { mediaRecorder?.stop() } catch (e: Exception) {}
+            try { mediaRecorder?.release() } catch (e: Exception) {}
+            mediaRecorder = null
+            if (isRecording) {
+                outputFile?.delete()
+                outputFile = null
+            }
         }
     }
 

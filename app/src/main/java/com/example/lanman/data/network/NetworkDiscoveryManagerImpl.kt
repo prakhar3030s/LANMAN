@@ -86,7 +86,7 @@ class NetworkDiscoveryManagerImpl(
 
     private fun acquireMulticastLock() {
         if (multicastLock == null) {
-            multicastLock = wifiManager.createMulticastLock("LocalLinkDiscoveryLock").apply {
+            multicastLock = wifiManager.createMulticastLock("LANMANDiscoveryLock").apply {
                 setReferenceCounted(true)
                 acquire()
             }

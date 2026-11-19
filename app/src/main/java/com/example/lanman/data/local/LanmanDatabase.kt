@@ -20,7 +20,7 @@ import com.example.lanman.data.local.entity.*
     exportSchema = true
 )
 @TypeConverters(EnumConverters::class)
-abstract class LocalLinkDatabase : RoomDatabase() {
+abstract class LanmanDatabase : RoomDatabase() {
     abstract fun profileDao(): ProfileDao
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao

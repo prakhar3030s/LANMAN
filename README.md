@@ -1,10 +1,10 @@
-# LocalLink
+# LANMAN
 
-LocalLink is a hyper-local, decentralized messaging application designed with a strict "Zero Cloud Footprint" philosophy. It allows devices on the same Local Area Network (LAN) or Wi-Fi network to discover each other, pair securely via QR codes, and exchange end-to-end encrypted messages and files directly — without any intermediate servers, cloud databases, or internet requirements.
+LANMAN is a hyper-local, decentralized messaging application designed with a strict "Zero Cloud Footprint" philosophy. It allows devices on the same Local Area Network (LAN) or Wi-Fi network to discover each other, pair securely via QR codes, and exchange end-to-end encrypted messages and files directly — without any intermediate servers, cloud databases, or internet requirements.
 
 ## Architecture
 
-LocalLink is built using a fully reactive, offline-first architecture on Android:
+LANMAN is built using a fully reactive, offline-first architecture on Android:
 
 1. **Discovery Layer**: Uses UDP Multicast (Port 4444) to continuously broadcast and discover peers on the local subnet.
 2. **Network/Transport Layer**: Establishes direct TCP socket connections (Port 4445) between devices for reliable message transmission.
@@ -40,7 +40,7 @@ Simply open the project in Android Studio and press "Run" (`Shift+F10`), or run 
 ```
 
 ### Release Build (Signed)
-LocalLink is configured to use ProGuard/R8 for minification. You must generate your own signing keystore to build a release APK.
+LANMAN is configured to use ProGuard/R8 for minification. You must generate your own signing keystore to build a release APK.
 
 1. Generate a keystore:
 ```bash

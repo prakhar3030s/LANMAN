@@ -119,7 +119,7 @@ fun MyQrCodeScreen(
                         text = "Copy Code",
                         onClick = {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = ClipData.newPlainText("LocalLink Code", currentState.payloadString)
+                            val clip = ClipData.newPlainText("LANMAN Code", currentState.payloadString)
                             clipboard.setPrimaryClip(clip)
                             Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
                         },

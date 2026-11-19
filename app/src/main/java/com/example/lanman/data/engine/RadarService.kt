@@ -33,7 +33,7 @@ class RadarService : Service() {
         super.onStartCommand(intent, flags, startId)
         
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LocalLink is running")
+            .setContentTitle("LANMAN is running")
             .setContentText("Listening for nearby devices")
             // A generic icon until we add a proper one, reusing standard Android drawables
             .setSmallIcon(android.R.drawable.ic_dialog_info)
@@ -67,7 +67,7 @@ class RadarService : Service() {
                 "Radar Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps LocalLink running in the background to discover peers and receive messages."
+                description = "Keeps LANMAN running in the background to discover peers and receive messages."
                 setShowBadge(false)
             }
             

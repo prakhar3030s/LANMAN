@@ -72,6 +72,11 @@ class SignalStoreImpl @Inject constructor(
 
     private val sessionCache = java.util.concurrent.ConcurrentHashMap<String, SessionRecord>()
 
+    /** Drops cached session records so a local-data reset cannot reuse them. */
+    fun clearInMemorySessions() {
+        sessionCache.clear()
+    }
+
     private fun sessionKey(address: SignalProtocolAddress?): String {
         return if (address == null) "" else "${address.name}_${address.deviceId}"
     }

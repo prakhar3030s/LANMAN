@@ -2,4 +2,6 @@
 <paths>
     <files-path name="received_files" path="received_files/" />
     <files-path name="encrypted_uploads" path="encrypted_uploads/" />
+    <files-path name="voice_recordings" path="voice_recordings/" />
+    <cache-path name="voice_cache" path="voice_recordings/" />
 </paths>

@@ -105,14 +105,17 @@ class FileTransferReceiver @Inject constructor(
         // Prepare output file with 256 KB buffered writer
         val receivedDir = File(context.filesDir, "received_files")
         if (!receivedDir.exists()) receivedDir.mkdirs()
-        
-        val destinationFile = File(receivedDir, frame.fileName)
+
+        // Never write to the peer-supplied name directly: two transfers can share a name
+        // (every voice note is "Voice Message"), and a name can contain path separators.
+        val displayName = safeDisplayName(frame.fileName)
+        val destinationFile = uniqueDestination(receivedDir, frame.fileTransferId, frame.fileName)
         val outputStream = BufferedOutputStream(FileOutputStream(destinationFile), NetworkConstants.FILE_STREAM_BUFFER_SIZE)
         
         activeTransfers[frame.fileTransferId] = ActiveTransferState(
             messageId = frame.messageId,
             contactId = contactId,
-            fileName = frame.fileName,
+            fileName = displayName,
             fileSizeBytes = frame.fileSizeBytes,
             mimeType = frame.mimeType,
             aesKey = aesKey,
@@ -125,7 +128,7 @@ class FileTransferReceiver @Inject constructor(
         val isVoice = frame.mimeType.startsWith("audio/lanman-voice")
         val messageType = if (isVoice) com.example.lanman.domain.model.MessageType.VOICE else com.example.lanman.domain.model.MessageType.FILE
         
-        var messageContent = "File: ${frame.fileName}".toByteArray(Charsets.UTF_8)
+        var messageContent = "File: $displayName".toByteArray(Charsets.UTF_8)
         if (isVoice) {
             // Extract duration from "audio/lanman-voice;duration=12400"
             val durationMs = frame.mimeType.substringAfter("duration=", "0")
@@ -146,7 +149,7 @@ class FileTransferReceiver @Inject constructor(
         val fileTransfer = com.example.lanman.domain.model.FileTransfer(
             id = frame.fileTransferId,
             messageId = frame.messageId,
-            fileName = frame.fileName,
+            fileName = displayName,
             fileSizeBytes = frame.fileSizeBytes,
             mimeType = frame.mimeType,
             localUri = destinationFile.absolutePath,
@@ -212,6 +215,26 @@ class FileTransferReceiver @Inject constructor(
         }
     }
     
+    /** Strip any directory components and control characters from a peer-supplied name. */
+    private fun safeDisplayName(originalName: String): String {
+        return originalName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .filter { !it.isISOControl() }
+            .trim()
+            .take(120)
+            .ifBlank { "file" }
+    }
+
+    /** Unique, sanitized on-disk destination so transfers never overwrite each other. */
+    private fun uniqueDestination(receivedDir: File, transferId: String, originalName: String): File {
+        val extension = safeDisplayName(originalName)
+            .substringAfterLast('.', "")
+            .takeIf { it.isNotEmpty() && it.length <= 10 && it.all { ch -> ch.isLetterOrDigit() } }
+        val fileName = if (extension == null) transferId else "$transferId.$extension"
+        return File(receivedDir, fileName)
+    }
+
     private fun cleanupTransfer(transferId: String) {
         val state = activeTransfers.remove(transferId) ?: return
         try { state.outputStream.close() } catch (e: Exception) {}

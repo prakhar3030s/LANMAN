@@ -29,6 +29,7 @@ import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -105,6 +106,7 @@ fun ConversationScreen(
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     
     LaunchedEffect(viewModel.errorFlow) {
         viewModel.errorFlow.collect { errorMessage ->
@@ -306,14 +308,23 @@ fun ConversationScreen(
                 } else {
                     VoiceRecordButton(
                         onRecordComplete = { file, durationMs ->
-                            viewModel.sendVoiceMessage(
-                                uri = androidx.core.content.FileProvider.getUriForFile(
-                                    context, 
-                                    "${context.packageName}.fileprovider", 
+                            // The provider throws if the file is outside every configured root,
+                            // so never let that escape from the recording callback.
+                            val uri = runCatching {
+                                androidx.core.content.FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
                                     file
-                                ), 
-                                durationMs = durationMs
-                            )
+                                )
+                            }.getOrNull()
+                            if (uri == null) {
+                                file.delete()
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar("Could not attach the voice recording")
+                                }
+                            } else {
+                                viewModel.sendVoiceMessage(uri = uri, durationMs = durationMs)
+                            }
                         }
                     )
                 }

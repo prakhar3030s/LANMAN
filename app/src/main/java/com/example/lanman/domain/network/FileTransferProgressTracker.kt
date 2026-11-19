@@ -39,4 +39,10 @@ class FileTransferProgressTracker @Inject constructor() {
         lastPercentages.remove(fileTransferId)
         _progressMap.update { it - fileTransferId }
     }
+
+    fun clearAll() {
+        lastUpdateTimes.clear()
+        lastPercentages.clear()
+        _progressMap.value = emptyMap()
+    }
 }
