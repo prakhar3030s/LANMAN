@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import com.example.lanman.ui.common.AppIcons
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -236,10 +237,11 @@ fun VoiceRecordButton(
                 },
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "🎙",
-                color = if (isRecording) Color.Red else ElectricCyan,
-                style = MaterialTheme.typography.titleLarge
+            androidx.compose.material3.Icon(
+                imageVector = AppIcons.Mic,
+                contentDescription = null,
+                tint = if (isRecording) Color.Red else ElectricCyan,
+                modifier = Modifier.size(24.dp)
             )
         }
     }

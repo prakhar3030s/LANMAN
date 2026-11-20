@@ -6,6 +6,7 @@ import com.example.lanman.domain.model.Contact
 import com.example.lanman.domain.qr.ContactQrPayload
 import com.example.lanman.domain.qr.QrPayloadCodec
 import com.example.lanman.domain.repository.ContactRepository
+import com.example.lanman.domain.repository.MessageRequestRepository
 import com.example.lanman.domain.repository.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,7 +30,8 @@ sealed class ScanContactState {
 @HiltViewModel
 class ScanContactViewModel @Inject constructor(
     private val profileRepository: ProfileRepository,
-    private val contactRepository: ContactRepository
+    private val contactRepository: ContactRepository,
+    private val messageRequestRepository: MessageRequestRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ScanContactState>(ScanContactState.Scanning)
@@ -100,6 +102,10 @@ class ScanContactViewModel @Inject constructor(
                     addedAt = System.currentTimeMillis()
                 )
                 contactRepository.upsertContact(contact)
+                // Pairing settles who this device is, so a request left by its earlier messages
+                // would only block the chat now that the contact exists. The sender retries
+                // those messages and they land in the conversation.
+                messageRequestRepository.deleteMessageRequest(payload.id)
                 _state.value = ScanContactState.Success
             } catch (e: Exception) {
                 _state.value = ScanContactState.Error("Failed to save contact.")

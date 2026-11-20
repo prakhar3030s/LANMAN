@@ -13,7 +13,10 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,14 +36,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.GlassTextField
+import com.example.lanman.ui.theme.Black
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.haze
 import java.util.concurrent.Executors
 
 @OptIn(androidx.camera.core.ExperimentalGetImage::class)
@@ -52,7 +54,6 @@ fun ScanContactScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val hazeState = remember { HazeState() }
     
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -82,7 +83,6 @@ fun ScanContactScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .haze(hazeState)
     ) {
         when (val currentState = state) {
             is ScanContactState.Scanning -> {
@@ -282,6 +282,21 @@ fun ScanContactScreen(
             is ScanContactState.Success -> {
                 // Handled by LaunchedEffect
             }
+        }
+
+        // The camera preview covers the whole screen, so the only way out is an overlay control.
+        IconButton(
+            onClick = onNavigateBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+                .background(Black.copy(alpha = 0.5f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = TextPrimary
+            )
         }
     }
 }

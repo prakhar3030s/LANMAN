@@ -1,38 +1,46 @@
 package com.example.lanman.ui.chat
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
-import com.example.lanman.domain.model.MessageStatus
 import com.example.lanman.ui.chat.components.MessageCard
 import com.example.lanman.ui.chat.components.VoiceRecordButton
+import com.example.lanman.ui.common.AppIcons
+import com.example.lanman.ui.common.EmptyState
+import com.example.lanman.ui.common.GlassDialog
+import com.example.lanman.ui.common.GlassDialogText
+import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.GlassTextField
+import com.example.lanman.ui.common.LanmanTopBar
+import com.example.lanman.ui.common.contentWidth
+import com.example.lanman.ui.common.pressable
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
+import java.nio.charset.StandardCharsets
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationScreen(
     onNavigateBack: () -> Unit,
@@ -42,12 +50,12 @@ fun ConversationScreen(
     val contactPresence by viewModel.contactPresence.collectAsStateWithLifecycle()
 
     val listState = rememberLazyListState()
-    val hazeState = remember { HazeState() }
-    val context = androidx.compose.ui.platform.LocalContext.current
-    
+    val context = LocalContext.current
+
     var inputText by remember { mutableStateOf("") }
     var previousMessageCount by remember { mutableIntStateOf(0) }
     var showAttachMenu by remember { mutableStateOf(false) }
+    var actionTarget by remember { mutableStateOf<MessageUiModel?>(null) }
 
     // Pickers
     val photoPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -57,7 +65,7 @@ fun ConversationScreen(
             viewModel.sendFile(uri)
         }
     }
-    
+
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -79,6 +87,16 @@ fun ConversationScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.setActive(false)
+        }
+    }
+
+    // Opening a chat must land on the newest message, not the oldest one. The list starts at
+    // index 0, so jump to the end once the thread has loaded.
+    var didInitialScroll by remember { mutableStateOf(false) }
+    LaunchedEffect(messages.size) {
+        if (!didInitialScroll && messages.isNotEmpty()) {
+            listState.scrollToItem(messages.lastIndex)
+            didInitialScroll = true
         }
     }
 
@@ -106,7 +124,7 @@ fun ConversationScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
-    
+
     LaunchedEffect(viewModel.errorFlow) {
         viewModel.errorFlow.collect { errorMessage ->
             snackbarHostState.showSnackbar(errorMessage)
@@ -115,46 +133,37 @@ fun ConversationScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        modifier = Modifier
-            .fillMaxSize()
-            .haze(hazeState),
-        containerColor = Color.Transparent
+        modifier = Modifier.fillMaxSize(),
+        containerColor = Color.Transparent,
+        // The bottom is handled below by imePadding, so the keyboard and the composer do not
+        // stack a navigation-bar gap between them.
+        contentWindowInsets = WindowInsets.systemBars.only(
+            WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+        )
     ) { paddingValues ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .background(MaterialTheme.colorScheme.background)
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.TopCenter
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Top Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = TextPrimary
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text(
-                            text = contactPresence?.contact?.displayName ?: "Unknown",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = if (contactPresence?.isOnline == true) "Online" else "Offline",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (contactPresence?.isOnline == true) ElectricCyan else TextSecondary
-                        )
-                    }
-                }
+            Column(
+                modifier = Modifier
+                    .contentWidth()
+                    .fillMaxHeight()
+                    // The whole screen lifts once when the keyboard opens, so the composer stays
+                    // glued to it instead of the window panning the header off-screen.
+                    .imePadding()
+            ) {
+                LanmanTopBar(
+                    title = contactPresence?.contact?.displayName ?: "Conversation",
+                    subtitle = if (contactPresence?.isOnline == true) "Online" else "Offline",
+                    subtitleColor = if (contactPresence?.isOnline == true) ElectricCyan else TextSecondary,
+                    onBack = onNavigateBack,
+                    avatarName = contactPresence?.contact?.displayName,
+                    avatarOnline = contactPresence?.isOnline == true
+                )
 
                 // Messages List
                 if (messages.isEmpty()) {
@@ -164,10 +173,10 @@ fun ConversationScreen(
                             .fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "Start the conversation",
-                            color = TextSecondary,
-                            style = MaterialTheme.typography.bodyLarge
+                        EmptyState(
+                            icon = AppIcons.Chat,
+                            title = "Start the conversation",
+                            message = "Messages are sent over your local network, end to end encrypted."
                         )
                     }
                 } else {
@@ -179,28 +188,24 @@ fun ConversationScreen(
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 16.dp)
+                            contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
+                            // Short threads sit on the composer instead of floating at the top.
+                            verticalArrangement = Arrangement.Bottom
                         ) {
                             itemsIndexed(
                                 items = messages,
                                 key = { _, uiModel: MessageUiModel -> uiModel.message.id }
                             ) { index, uiModel: MessageUiModel ->
                                 val previousMessage = if (index > 0) messages[index - 1] else null
-                                
+
                                 val currentDateStr = formatMessageDate(uiModel.message.timestamp)
-                                val showDateSeparator = previousMessage == null || 
+                                val showDateSeparator = previousMessage == null ||
                                     currentDateStr != formatMessageDate(previousMessage.message.timestamp)
-                                
+
                                 if (showDateSeparator) {
                                     DateSeparator(dateStr = currentDateStr)
                                 }
-                                
-                                val showHeader = shouldShowHeader(uiModel.message, previousMessage?.message)
-                                
-                                if (showHeader) {
-                                    MessageClusterHeader(message = uiModel.message)
-                                }
-                                
+
                                 MessageCard(
                                     uiModel = uiModel,
                                     onRetry = {
@@ -208,15 +213,16 @@ fun ConversationScreen(
                                     },
                                     onCancel = {
                                         viewModel.cancelTransfer(uiModel.message.id, uiModel.fileTransfer?.id)
-                                    }
+                                    },
+                                    onLongPress = { actionTarget = uiModel }
                                 )
                             }
                         }
-                        
+
                         // Floating Sticky Date Header
                         val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
                         val isScrolling = listState.isScrollInProgress
-                        
+
                         var showFloatingDate by remember { mutableStateOf(false) }
                         LaunchedEffect(isScrolling) {
                             if (isScrolling) {
@@ -226,7 +232,7 @@ fun ConversationScreen(
                                 showFloatingDate = false
                             }
                         }
-                        
+
                         androidx.compose.animation.AnimatedVisibility(
                             visible = showFloatingDate,
                             enter = androidx.compose.animation.fadeIn(),
@@ -242,137 +248,179 @@ fun ConversationScreen(
                 }
 
                 // Input Area
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     IconButton(onClick = { showAttachMenu = true }) {
                         Icon(
-                            imageVector = androidx.compose.material.icons.Icons.Default.Add,
+                            imageVector = Icons.Default.Add,
                             contentDescription = "Attach a photo or document",
                             tint = TextPrimary
                         )
                     }
-                    
-                    DropdownMenu(
-                        expanded = showAttachMenu,
-                        onDismissRequest = { showAttachMenu = false },
-                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Photo / Video", color = TextPrimary) },
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    GlassTextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        placeholder = "Message...",
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    if (inputText.isNotBlank()) {
+                        IconButton(
                             onClick = {
-                                showAttachMenu = false
-                                photoPickerLauncher.launch(
-                                    androidx.activity.result.PickVisualMediaRequest(
-                                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                                viewModel.sendMessage(inputText)
+                                inputText = ""
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .background(ElectricCyan.copy(alpha = 0.2f), shape = androidx.compose.foundation.shape.CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = ElectricCyan
+                            )
+                        }
+                    } else {
+                        VoiceRecordButton(
+                            onRecordComplete = { file, durationMs ->
+                                // The provider throws if the file is outside every configured root,
+                                // so never let that escape from the recording callback.
+                                val uri = runCatching {
+                                    androidx.core.content.FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        file
                                     )
-                                )
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Document", color = TextPrimary) },
-                            onClick = {
-                                showAttachMenu = false
-                                filePickerLauncher.launch(arrayOf("*/*"))
+                                }.getOrNull()
+                                if (uri == null) {
+                                    file.delete()
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar("Could not attach the voice recording")
+                                    }
+                                } else {
+                                    viewModel.sendVoiceMessage(uri = uri, durationMs = durationMs)
+                                }
                             }
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                GlassTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    placeholder = "Message...",
+            }
+        }
+    }
 
-                    modifier = Modifier.weight(1f)
+    if (showAttachMenu) {
+        ModalBottomSheet(
+            onDismissRequest = { showAttachMenu = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                Text(
+                    text = "Attach",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = TextPrimary,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                 )
-                Spacer(modifier = Modifier.width(16.dp))
-                if (inputText.isNotBlank()) {
-                    IconButton(
-                        onClick = {
-                            viewModel.sendMessage(inputText)
-                            inputText = ""
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .background(ElectricCyan.copy(alpha = 0.2f), shape = androidx.compose.foundation.shape.CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            tint = ElectricCyan
+                SheetAction(
+                    icon = AppIcons.Image,
+                    label = "Photo or video",
+                    onClick = {
+                        showAttachMenu = false
+                        photoPickerLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo
+                            )
                         )
                     }
-                } else {
-                    VoiceRecordButton(
-                        onRecordComplete = { file, durationMs ->
-                            // The provider throws if the file is outside every configured root,
-                            // so never let that escape from the recording callback.
-                            val uri = runCatching {
-                                androidx.core.content.FileProvider.getUriForFile(
-                                    context,
-                                    "${context.packageName}.fileprovider",
-                                    file
+                )
+                SheetAction(
+                    icon = AppIcons.InsertDriveFile,
+                    label = "Document",
+                    onClick = {
+                        showAttachMenu = false
+                        filePickerLauncher.launch(arrayOf("*/*"))
+                    }
+                )
+            }
+        }
+    }
+
+    actionTarget?.let { target ->
+        val isText = target.message.type == com.example.lanman.domain.model.MessageType.TEXT
+        GlassDialog(
+            onDismissRequest = { actionTarget = null },
+            title = if (isText) "Message" else "Attachment",
+            confirmLabel = "Close",
+            onConfirm = { actionTarget = null },
+            dismissLabel = "Cancel"
+        ) {
+            if (isText) {
+                GlassDialogText("Copy the text of this message to the clipboard?")
+            } else {
+                GlassDialogText("Use the bubble actions to open, share or save this attachment.")
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            if (isText) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pressable {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText(
+                                    "Message",
+                                    String(target.message.content, StandardCharsets.UTF_8)
                                 )
-                            }.getOrNull()
-                            if (uri == null) {
-                                file.delete()
-                                coroutineScope.launch {
-                                    snackbarHostState.showSnackbar("Could not attach the voice recording")
-                                }
-                            } else {
-                                viewModel.sendVoiceMessage(uri = uri, durationMs = durationMs)
-                            }
+                            )
+                            android.widget.Toast.makeText(context, "Message copied", android.widget.Toast.LENGTH_SHORT).show()
+                            actionTarget = null
                         }
-                    )
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(AppIcons.ContentCopy, contentDescription = null, tint = ElectricCyan)
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("Copy text", color = TextPrimary, style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
     }
 }
-}
-
-private fun shouldShowHeader(current: Message, previous: Message?): Boolean {
-    if (previous == null) return true
-    if (current.direction != previous.direction) return true
-    
-    // Group consecutive messages by same direction within 5 minutes (300,000 ms)
-    val timeDiff = current.timestamp - previous.timestamp
-    return timeDiff > 300_000
-}
 
 @Composable
-fun MessageClusterHeader(message: Message) {
-    val alignment = if (message.direction == MessageDirection.OUTGOING) Alignment.CenterEnd else Alignment.CenterStart
-    Box(
+private fun SheetAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 12.dp),
-        contentAlignment = alignment
+            .pressable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        val formatter = SimpleDateFormat("HH:mm", Locale.getDefault())
-        Text(
-            text = formatter.format(Date(message.timestamp)),
-            style = MaterialTheme.typography.labelSmall,
-            color = TextSecondary
-        )
+        Icon(imageVector = icon, contentDescription = null, tint = ElectricCyan)
+        Spacer(modifier = Modifier.width(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
     }
 }
 
 @Composable
 fun DateSeparator(dateStr: String) {
     Box(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
-        ) {
+        GlassSurface(shape = RoundedCornerShape(12.dp)) {
             Text(
                 text = dateStr,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -388,7 +436,7 @@ fun formatMessageDate(timestamp: Long): String {
         .atZone(java.time.ZoneId.systemDefault())
         .toLocalDate()
     val today = java.time.LocalDate.now()
-    
+
     return when {
         messageDate == today -> "Today"
         messageDate == today.minusDays(1) -> "Yesterday"

@@ -10,17 +10,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,10 +40,16 @@ import com.example.lanman.domain.model.MessageDirection
 import com.example.lanman.domain.model.MessageStatus
 import com.example.lanman.domain.model.MessageType
 import com.example.lanman.ui.chat.MessageUiModel
+import com.example.lanman.ui.common.AppIcons
+import com.example.lanman.ui.common.GlassDialog
+import com.example.lanman.ui.common.GlassDialogText
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.MediaActions
 import com.example.lanman.ui.common.deliverySweep
+import com.example.lanman.ui.common.pressable
 import com.example.lanman.ui.theme.ElectricCyan
+import com.example.lanman.ui.theme.StatusDelivered
+import com.example.lanman.ui.theme.StatusPending
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
 import java.io.File
@@ -61,6 +63,7 @@ fun MessageCard(
     uiModel: MessageUiModel,
     onRetry: () -> Unit = {},
     onCancel: () -> Unit = {},
+    onLongPress: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val message = uiModel.message
@@ -103,46 +106,39 @@ fun MessageCard(
     } else Modifier
 
     if (showFileActions && fileTransfer != null) {
-        AlertDialog(
+        GlassDialog(
             onDismissRequest = { showFileActions = false },
-            title = {
-                Text(
-                    text = fileTransfer.fileName,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            },
-            text = {
-                Column {
-                    DialogAction("Open") {
-                        showFileActions = false
-                        MediaActions.openFile(context, fileTransfer.localUri, fileTransfer.mimeType)
-                    }
-                    DialogAction("Share") {
-                        showFileActions = false
-                        MediaActions.shareFile(context, fileTransfer.localUri, fileTransfer.mimeType)
-                    }
-                    DialogAction("Save to Downloads") {
-                        showFileActions = false
-                        val saved = MediaActions.saveToDownloads(
-                            context,
-                            fileTransfer.localUri,
-                            fileTransfer.fileName,
-                            fileTransfer.mimeType
-                        )
-                        Toast.makeText(
-                            context,
-                            if (saved) "Saved to Downloads/LANMAN" else "Could not save this file",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+            title = fileTransfer.fileName,
+            confirmLabel = "Close",
+            onConfirm = { showFileActions = false }
+        ) {
+            Column {
+                GlassDialogText("Choose what to do with this file.")
+                Spacer(modifier = Modifier.height(8.dp))
+                DialogAction("Open") {
+                    showFileActions = false
+                    MediaActions.openFile(context, fileTransfer.localUri, fileTransfer.mimeType)
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showFileActions = false }) { Text("Close") }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+                DialogAction("Share") {
+                    showFileActions = false
+                    MediaActions.shareFile(context, fileTransfer.localUri, fileTransfer.mimeType)
+                }
+                DialogAction("Save to Downloads") {
+                    showFileActions = false
+                    val saved = MediaActions.saveToDownloads(
+                        context,
+                        fileTransfer.localUri,
+                        fileTransfer.fileName,
+                        fileTransfer.mimeType
+                    )
+                    Toast.makeText(
+                        context,
+                        if (saved) "Saved to Downloads/LANMAN" else "Could not save this file",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
     }
 
     Box(
@@ -154,8 +150,12 @@ fun MessageCard(
         // Flush edge-to-edge message card (per brief, no tails)
         GlassSurface(
             modifier = Modifier
-                .widthIn(max = 280.dp)
+                .widthIn(max = 320.dp)
                 .deliverySweep(message.status)
+                // Long-press anywhere on the bubble offers the same actions, whatever its type.
+                .pointerInput(message.id) {
+                    detectTapGestures(onLongPress = { onLongPress() })
+                }
                 .then(fileTapModifier),
             shape = shape,
             tint = baseTint
@@ -347,7 +347,12 @@ fun MessageCard(
                                             trackColor = Color.White.copy(alpha = 0.2f),
                                             strokeWidth = 3.dp
                                         )
-                                        Text("🎙", style = MaterialTheme.typography.titleSmall)
+                                        Icon(
+                                            imageVector = AppIcons.Mic,
+                                            contentDescription = null,
+                                            tint = ElectricCyan,
+                                            modifier = Modifier.size(18.dp)
+                                        )
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text(
@@ -446,13 +451,11 @@ fun MessageCard(
                         Text("Loading transfer info...", color = textColor)
                     }
                 } else {
-                    SelectionContainer {
-                        Text(
-                            text = String(message.content, StandardCharsets.UTF_8),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = textColor
-                        )
-                    }
+                    Text(
+                        text = String(message.content, StandardCharsets.UTF_8),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = textColor
+                    )
                 }
 
                 // Status affordance: time, delivery state, and the actions that make sense while
@@ -491,25 +494,20 @@ fun MessageCard(
                                     .padding(vertical = 2.dp)
                                     .semantics { contentDescription = "Message failed, tap to retry" }
                             )
-                            message.status == MessageStatus.PENDING -> Text(
+                            message.status == MessageStatus.PENDING -> StatusBadge(
                                 text = "Queued",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary,
-                                modifier = Modifier.semantics { contentDescription = "Queued, waiting to send" }
+                                description = "Queued, waiting to send"
                             )
-                            message.status == MessageStatus.SENT -> Text(
+                            message.status == MessageStatus.SENT -> StatusBadge(
                                 text = "Sending…",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary,
-                                modifier = Modifier.semantics { contentDescription = "Sending" }
+                                description = "Sending"
                             )
                             else -> {
-                                val icon = if (message.status == MessageStatus.READ) Icons.Default.CheckCircle else Icons.Default.Check
-                                val iconTint = if (message.status == MessageStatus.READ) ElectricCyan else TextSecondary.copy(alpha = 0.7f)
+                                // Double check for delivered/read, matching the clock above for queued.
                                 Icon(
-                                    imageVector = icon,
+                                    imageVector = AppIcons.DoneAll,
                                     contentDescription = if (message.status == MessageStatus.READ) "Read" else "Delivered",
-                                    tint = iconTint,
+                                    tint = if (message.status == MessageStatus.READ) ElectricCyan else StatusDelivered.copy(alpha = 0.75f),
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
@@ -523,12 +521,33 @@ fun MessageCard(
 
 @Composable
 private fun DialogAction(label: String, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, modifier = Modifier.fillMaxWidth())
+        Text(label, color = TextPrimary, style = MaterialTheme.typography.bodyLarge)
     }
+}
+
+/** Clock plus label, the shared visual for a message that is not on the wire yet. */
+@Composable
+private fun StatusBadge(text: String, description: String) {
+    Icon(
+        imageVector = AppIcons.Schedule,
+        contentDescription = null,
+        tint = StatusPending,
+        modifier = Modifier.size(14.dp)
+    )
+    Spacer(modifier = Modifier.width(4.dp))
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = StatusPending,
+        modifier = Modifier.semantics { contentDescription = description }
+    )
 }
 
 private fun formatTime(timestamp: Long): String {

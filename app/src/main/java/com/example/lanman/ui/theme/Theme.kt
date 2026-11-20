@@ -6,6 +6,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -16,7 +17,18 @@ private val DarkColorScheme = darkColorScheme(
     surface = Black,
     onPrimary = Black,
     onBackground = TextPrimary,
-    onSurface = TextPrimary
+    onSurface = TextPrimary,
+    // Material defaults (surfaceVariant, containers) were the last non-glass surfaces in the app;
+    // keep any stray Material component on the same dark tint as everything else.
+    surfaceVariant = Color(0xFF10181B),
+    onSurfaceVariant = TextPrimary,
+    surfaceContainer = Color(0xFF0D1418),
+    surfaceContainerHigh = Color(0xFF131C20),
+    surfaceContainerHighest = Color(0xFF162124),
+    primaryContainer = ElectricCyan.copy(alpha = 0.16f),
+    onPrimaryContainer = TextPrimary,
+    errorContainer = Color(0xFF3B1414),
+    onErrorContainer = Color(0xFFFFB4AB)
 )
 
 @Composable

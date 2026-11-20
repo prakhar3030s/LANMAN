@@ -158,6 +158,13 @@ class ConnectionManagerImpl(
                 Log.d(TAG, "Received HELLO from unknown contact $contactId. Accepting connection conditionally.")
             } else {
                 Log.d(TAG, "Verified HELLO from known contact: $contactId")
+                // The peer just proved it is reachable at this address. UDP heartbeats can be
+                // dropped by the router or client isolation, which would otherwise leave replies
+                // stuck as "Queued" because the contact has no known IP.
+                val remoteIp = socket.inetAddress?.hostAddress
+                if (!remoteIp.isNullOrBlank()) {
+                    contactRepository.updateLastKnownIp(contactId, remoteIp, System.currentTimeMillis())
+                }
             }
             
             val connection = ActiveConnection(

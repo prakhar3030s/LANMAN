@@ -22,7 +22,9 @@ import javax.inject.Singleton
 
 @Singleton
 class NotificationHelper @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val preferences: NotificationPreferences,
+    private val mutedChatsStore: com.example.lanman.data.security.MutedChatsStore
 ) {
     companion object {
         const val CHANNEL_ID = "messages_channel"
@@ -58,6 +60,9 @@ class NotificationHelper @Inject constructor(
 
     fun showNewMessageNotification(contactId: String, senderName: String, message: Message) {
         if (!canNotify()) return
+        if (!preferences.enabled) return
+        if (!preferences.messagesEnabled) return
+        if (mutedChatsStore.isMuted(contactId)) return
 
         val contentText = when (message.type) {
             MessageType.FILE -> "Sent a file" // Per requirements, no raw content preview for files
@@ -83,6 +88,8 @@ class NotificationHelper @Inject constructor(
     /** Tells the user that someone they have not paired with is trying to message them. */
     fun showMessageRequestNotification(contactId: String, senderName: String, preview: String) {
         if (!canNotify()) return
+        if (!preferences.enabled) return
+        if (!preferences.requestsEnabled) return
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)

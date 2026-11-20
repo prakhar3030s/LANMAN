@@ -16,10 +16,10 @@ import com.example.lanman.ui.theme.GlassBorder
 import com.example.lanman.ui.theme.GlassSurfaceTint
 
 /**
- * A reusable frosted glass container.
- * 
- * Note: To prevent Haze crashes, hazeChild is no longer applied here.
- * The glass effect is achieved via the semi-transparent tint and border.
+ * A reusable frosted glass container: a low-alpha tint plus a hairline border.
+ *
+ * The effect is deliberately flat rather than a blurred backdrop — the haze blur pipeline was
+ * dropped from the project, so this is the single glass surface every screen uses.
  */
 @Composable
 fun GlassSurface(

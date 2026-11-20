@@ -22,6 +22,21 @@ class EncryptionEngine @Inject constructor(
         // Ensure session exists
         sessionManager.establishSession(contactId)
 
+        val ciphertextMessage = try {
+            encryptOnce(contactId, plaintext)
+        } catch (e: Exception) {
+            // A stored session can go stale (peer reinstalled, keys rotated, ratchet out of
+            // step). Rebuild it once rather than leaving every message queued behind it.
+            Log.w(TAG, "Encrypt failed for $contactId, rebuilding session: ${e.message}")
+            sessionManager.resetSession(contactId)
+            sessionManager.establishSession(contactId)
+            encryptOnce(contactId, plaintext)
+        }
+
+        return ciphertextMessage
+    }
+
+    private fun encryptOnce(contactId: String, plaintext: ByteArray): ByteArray {
         val address = SignalProtocolAddress(contactId, 1) // Default device ID
         val cipher = SessionCipher(signalStore, address)
 

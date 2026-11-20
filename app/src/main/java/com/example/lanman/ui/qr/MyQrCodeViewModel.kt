@@ -19,7 +19,8 @@ sealed class MyQrCodeState {
     data class Generated(
         val bitmap: Bitmap,
         val matrix: Array<BooleanArray>?,
-        val payloadString: String
+        val payloadString: String,
+        val displayName: String = ""
     ) : MyQrCodeState() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -90,7 +91,12 @@ class MyQrCodeViewModel @Inject constructor(
                         val matrix = QrCodeGenerator.generateQrBooleanMatrix(payloadString)
                         
                         if (bitmap != null) {
-                            _state.value = MyQrCodeState.Generated(bitmap, matrix, payloadString)
+                            _state.value = MyQrCodeState.Generated(
+                                bitmap = bitmap,
+                                matrix = matrix,
+                                payloadString = payloadString,
+                                displayName = profile.displayName
+                            )
                         } else {
                             android.util.Log.e("QR_DEBUG", "Bitmap generation returned null")
                             _state.value = MyQrCodeState.Error

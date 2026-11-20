@@ -28,8 +28,6 @@ import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassTextField
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.flow.collectLatest
 
 @Composable
@@ -40,8 +38,6 @@ fun OnboardingScreen(
     val displayName = viewModel.displayName.value
     val errorMessage = viewModel.errorMessage.value
     val isSaving = viewModel.isSaving.value
-
-    val hazeState = remember { HazeState() }
 
     LaunchedEffect(Unit) {
         viewModel.events.collectLatest { event ->
@@ -57,7 +53,6 @@ fun OnboardingScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .haze(state = hazeState)
     ) {
         Column(
             modifier = Modifier

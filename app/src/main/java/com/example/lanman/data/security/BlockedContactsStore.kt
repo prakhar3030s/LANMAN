@@ -33,6 +33,19 @@ class BlockedContactsStore @Inject constructor(
         }
     }
 
+    @Synchronized
+    fun unblock(contactId: String) {
+        val updated = read() - contactId
+        try {
+            file.writeText(updated.joinToString("\n"))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to unblock contact $contactId", e)
+        }
+    }
+
+    @Synchronized
+    fun blockedIds(): Set<String> = read()
+
     private fun read(): Set<String> {
         return try {
             if (!file.exists()) emptySet()

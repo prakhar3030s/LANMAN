@@ -69,7 +69,8 @@ class MainActivity : ComponentActivity() {
                                 Screen.ChatList.route
                             }
                             
-                            val hazeState = androidx.compose.runtime.remember { dev.chrisbanes.haze.HazeState() }
+                            val badgeViewModel: com.example.lanman.ui.chat.ChatBadgeViewModel = hiltViewModel()
+                            val unreadTotal by badgeViewModel.unreadTotal.collectAsStateWithLifecycle()
 
                             Scaffold(
                                 modifier = Modifier.fillMaxSize(),
@@ -77,7 +78,7 @@ class MainActivity : ComponentActivity() {
                                 bottomBar = {
                                     com.example.lanman.ui.navigation.AppBottomNavigation(
                                         navController = navController,
-                                        hazeState = hazeState
+                                        unreadCount = unreadTotal
                                     )
                                 }
                             ) { innerPadding ->
@@ -148,7 +149,11 @@ class MainActivity : ComponentActivity() {
                                             onNavigateToMessageRequests = {
                                                 navController.navigate(Screen.MessageRequests.route)
                                             },
-                                            hazeState = hazeState
+                                            onNavigateToNewChat = {
+                                                navController.navigate(Screen.Contacts.route) {
+                                                    launchSingleTop = true
+                                                }
+                                            }
                                         )
                                     }
 
@@ -162,7 +167,9 @@ class MainActivity : ComponentActivity() {
                                     }
 
                                     composable(Screen.MyQrCode.route) {
-                                        com.example.lanman.ui.qr.MyQrCodeScreen()
+                                        com.example.lanman.ui.qr.MyQrCodeScreen(
+                                            onNavigateBack = { navController.popBackStack() }
+                                        )
                                     }
                                     composable(Screen.AddContact.route) {
                                         com.example.lanman.ui.qr.ScanContactScreen(
@@ -178,8 +185,7 @@ class MainActivity : ComponentActivity() {
                                                 navController.navigate(Screen.ContactDetail.createRoute(contactId))
                                             },
                                             onNavigateToMyQr = { navController.navigate(Screen.MyQrCode.route) },
-                                            onNavigateToAddContact = { navController.navigate(Screen.AddContact.route) },
-                                            hazeState = hazeState
+                                            onNavigateToAddContact = { navController.navigate(Screen.AddContact.route) }
                                         )
                                     }
                                     composable(Screen.Settings.route) {
@@ -190,7 +196,14 @@ class MainActivity : ComponentActivity() {
                                                     popUpTo(0) { inclusive = true }
                                                 }
                                             },
-                                            hazeState = hazeState
+                                            onNavigateToBlockedContacts = {
+                                                navController.navigate(Screen.BlockedContacts.route)
+                                            }
+                                        )
+                                    }
+                                    composable(Screen.BlockedContacts.route) {
+                                        com.example.lanman.ui.settings.BlockedContactsScreen(
+                                            onNavigateBack = { navController.popBackStack() }
                                         )
                                     }
                                     composable(Screen.ContactDetail.route) { backStackEntry ->

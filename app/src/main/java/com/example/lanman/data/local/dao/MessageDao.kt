@@ -55,4 +55,16 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE contactId = :contactId ORDER BY timestamp DESC LIMIT 1")
     fun getLastMessageForContact(contactId: String): Flow<MessageEntity?>
+
+    @Query("UPDATE messages SET status = 'READ' WHERE contactId = :contactId AND direction = 'INCOMING'")
+    suspend fun markIncomingAsRead(contactId: String)
+
+    @Query("DELETE FROM messages WHERE contactId = :contactId")
+    suspend fun deleteMessagesForContact(contactId: String)
+
+    @Query("SELECT COUNT(*) FROM messages WHERE contactId = :contactId")
+    fun countMessagesForContact(contactId: String): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE contactId = :contactId AND type IN ('FILE', 'VOICE')")
+    fun countAttachmentsForContact(contactId: String): Flow<Int>
 }

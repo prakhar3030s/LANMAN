@@ -4,6 +4,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -12,21 +14,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.Black
-import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.hazeChild
-import dev.chrisbanes.haze.HazeStyle
 
-@androidx.compose.runtime.Composable
-@androidx.annotation.OptIn(dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi::class)
+@Composable
 fun AppBottomNavigation(
     navController: NavController,
-    hazeState: HazeState
+    unreadCount: Int = 0
 ) {
     val items = listOf(
         Screen.ChatList,
@@ -37,13 +35,7 @@ fun AppBottomNavigation(
     val currentRoute = navBackStackEntry.value?.destination?.route
 
     if (currentRoute in items.map { it.route }) {
-        NavigationBar(
-            containerColor = Color.Transparent,
-            modifier = Modifier.hazeChild(
-                state = hazeState,
-                style = dev.chrisbanes.haze.materials.HazeMaterials.thin(Black)
-            )
-        ) {
+        NavigationBar(containerColor = Color.Black) {
             items.forEach { screen ->
                 val icon = when (screen) {
                     Screen.ChatList -> Icons.Default.Email
@@ -57,17 +49,33 @@ fun AppBottomNavigation(
                     Screen.Settings -> "Settings"
                     else -> ""
                 }
-                
+
                 NavigationBarItem(
-                    icon = { Icon(icon, contentDescription = label) },
+                    icon = {
+                        if (screen == Screen.ChatList && unreadCount > 0) {
+                            BadgedBox(
+                                badge = {
+                                    Badge(containerColor = ElectricCyan, contentColor = Black) {
+                                        Text(
+                                            text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            ) {
+                                Icon(icon, contentDescription = label)
+                            }
+                        } else {
+                            Icon(icon, contentDescription = label)
+                        }
+                    },
                     label = { Text(label) },
                     selected = currentRoute == screen.route,
                     onClick = {
                         if (currentRoute != screen.route) {
                             navController.navigate(screen.route) {
-                                popUpTo(Screen.ChatList.route) { saveState = true }
+                                popUpTo(Screen.ChatList.route) { inclusive = false }
                                 launchSingleTop = true
-                                restoreState = true
                             }
                         }
                     },

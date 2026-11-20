@@ -15,4 +15,8 @@ interface MessageRepository {
     suspend fun updateMessageStatus(id: String, status: MessageStatus)
     suspend fun updateMessageStatusIfCurrent(id: String, currentStatus: MessageStatus, status: MessageStatus)
     fun getLastMessageForContact(contactId: String): Flow<Message?>
+    suspend fun markConversationRead(contactId: String)
+    suspend fun deleteConversation(contactId: String)
+    fun getMessageCount(contactId: String): Flow<Int>
+    fun getAttachmentCount(contactId: String): Flow<Int>
 }

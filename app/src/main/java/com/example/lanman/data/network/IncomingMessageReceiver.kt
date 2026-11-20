@@ -46,6 +46,9 @@ class IncomingMessageReceiver @Inject constructor(
     private val TAG = "IncomingMessageReceiver"
     private var job: Job? = null
 
+    // Rate limit for asking a peer to re-handshake after a message we could not decrypt.
+    private val lastKeyBundleRequest = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     fun start(scope: CoroutineScope) {
         if (job != null) return
         
@@ -73,25 +76,34 @@ class IncomingMessageReceiver @Inject constructor(
     private suspend fun handleMessageFrame(event: IncomingFrameEvent) {
         val contactId = event.contactId
         val frame = event.frame as Frame.MessageFrame
-        
-        // Immediately send ACK, even if it might already exist (in case the previous ACK was lost)
-        connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
-        
-        // Decrypt the content first, then transact
+
+        if (blockedContactsStore.isBlocked(contactId)) {
+            // Acknowledge so a blocked sender does not retry forever, but store nothing.
+            Log.d(TAG, "Ignoring message from blocked contact $contactId")
+            connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
+            return
+        }
+
+        // Decrypt before acknowledging: an ACK is a promise that the text is on this device, and
+        // a message we cannot read must stay queued on the sender so it is retried once the
+        // session is usable (instead of showing a double tick for a message that was dropped).
         val decryptResult = encryptionEngine.decrypt(contactId, frame.content)
         if (decryptResult.isFailure) {
             Log.e(TAG, "Failed to decrypt message ${frame.messageId} from $contactId", decryptResult.exceptionOrNull())
+            // Ask for a fresh handshake so the sender starts a new ratchet; without it every
+            // later message fails the same way and nothing ever arrives.
+            val now = System.currentTimeMillis()
+            if (now - (lastKeyBundleRequest[contactId] ?: 0L) > KEY_BUNDLE_REQUEST_INTERVAL_MS) {
+                lastKeyBundleRequest[contactId] = now
+                connectionManager.sendFrame(contactId, Frame.KeyBundleRequestFrame(contactId))
+            }
             return
         }
         val plaintext = decryptResult.getOrThrow()
 
-        // A connection is flagged unknown when it opened, but the user can accept the request
-        // while it is still open, so re-check the contact table before treating it as unknown.
-        if (event.isUnknown && contactRepository.getContactById(contactId).firstOrNull() == null) {
-            if (blockedContactsStore.isBlocked(contactId)) {
-                Log.d(TAG, "Ignoring message from blocked contact $contactId")
-                return
-            }
+        // A connection is flagged unknown when it opened, but the user can accept the request or
+        // pair the device while it is still open, so always re-check the contact table.
+        if (contactRepository.getContactById(contactId).firstOrNull() == null) {
             val displayName = event.unknownDisplayName ?: "Unknown"
             val identityKey = event.unknownIdentityKey ?: ""
             val request = MessageRequest(
@@ -102,6 +114,7 @@ class IncomingMessageReceiver @Inject constructor(
                 firstMessageText = String(plaintext, Charsets.UTF_8)
             )
             messageRequestRepository.addMessageRequest(request)
+            connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
             Log.d(TAG, "Received message from unknown contact $contactId. Saved as Message Request.")
             notificationHelper.showMessageRequestNotification(
                 contactId = contactId,
@@ -122,6 +135,8 @@ class IncomingMessageReceiver @Inject constructor(
         )
 
         val inserted = messageRepository.insertIfNotExists(message)
+        // ACK once the message is on disk (also re-ACK a duplicate whose ACK was lost).
+        connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
         if (inserted) {
             Log.d(TAG, "Received and persisted new message ${frame.messageId} from $contactId. ACK sent.")
             
@@ -166,11 +181,14 @@ class IncomingMessageReceiver @Inject constructor(
         myProfile.publicKeyBundle?.let { bundle ->
             connectionManager.sendFrame(contactId, Frame.KeyBundleResponseFrame(bundle))
             Log.d(TAG, "Sent KeyBundleResponseFrame to $contactId")
+            // Either the peer just paired (it needs our bundle) or it could not decrypt what we
+            // sent. Dropping our side of the session makes the next message a prekey message,
+            // which is the only thing a peer with no usable session can read.
+            encryptionEngine.deleteSession(contactId)
         }
     }
 
-    private suspend fun handleKeyBundleResponse(contactId: String, frame: Frame.KeyBundleResponseFrame) {
-        val contact = contactRepository.getContactById(contactId).firstOrNull() ?: return
+    private suspend fun handleKeyBundleResponse(contactId: String, frame: Frame.KeyBundleResponseFrame) {        val contact = contactRepository.getContactById(contactId).firstOrNull() ?: return
         
         try {
             val incomingJson = org.json.JSONObject(String(frame.bundle, Charsets.UTF_8))
@@ -196,5 +214,9 @@ class IncomingMessageReceiver @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse KeyBundleResponseFrame for $contactId", e)
         }
+    }
+
+    private companion object {
+        const val KEY_BUNDLE_REQUEST_INTERVAL_MS = 15_000L
     }
 }

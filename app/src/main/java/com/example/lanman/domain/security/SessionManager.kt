@@ -67,14 +67,12 @@ class SessionManager @Inject constructor(
         val signedPreKeyBytes = Base64.decode(json.getString("signedPreKey"), Base64.NO_WRAP)
         val signedPreKeySignature = Base64.decode(json.getString("signedPreKeySignature"), Base64.NO_WRAP)
         
-        val oneTimePreKeyId = json.optInt("oneTimePreKeyId", org.signal.libsignal.protocol.state.PreKeyBundle.NULL_PRE_KEY_ID)
-        val oneTimePreKeyBytes = if (json.has("oneTimePreKey")) {
-            Base64.decode(json.getString("oneTimePreKey"), Base64.NO_WRAP)
-        } else null
-        
-        if (oneTimePreKeyBytes != null && oneTimePreKeyId < 0) {
-            throw IllegalArgumentException("oneTimePreKey is present but oneTimePreKeyId is invalid")
-        }
+        // One-time prekeys from a QR bundle are ignored on purpose. A bundle is long-lived, so
+        // its single prekey is consumed by the first session; every later session would then
+        // fail on the peer with InvalidKeyIdException and the messages would queue forever.
+        // X3DH/PQXDH still work from the signed and Kyber prekeys alone.
+        val oneTimePreKeyId = PreKeyBundle.NULL_PRE_KEY_ID
+        val oneTimePreKeyBytes: ByteArray? = null
 
         if (!json.has("kyberPreKeyId") || !json.has("kyberPreKey") || !json.has("kyberPreKeySignature")) {
             throw IllegalArgumentException("Missing kyber prekey information in contact bundle")
@@ -104,5 +102,11 @@ class SessionManager @Inject constructor(
         sessionBuilder.process(preKeyBundle)
         
         Log.d(TAG, "Successfully established X3DH session for $contactId")
+    }
+
+    /** Drops a broken session so the next message starts from a fresh prekey handshake. */
+    suspend fun resetSession(contactId: String) {
+        signalStore.deleteSession(SignalProtocolAddress(contactId, 1))
+        Log.d(TAG, "Reset session for $contactId")
     }
 }

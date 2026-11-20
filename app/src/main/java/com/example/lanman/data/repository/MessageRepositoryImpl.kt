@@ -62,4 +62,18 @@ class MessageRepositoryImpl @Inject constructor(
     override fun getLastMessageForContact(contactId: String): Flow<Message?> {
         return messageDao.getLastMessageForContact(contactId).map { it?.toDomain() }
     }
+
+    override suspend fun markConversationRead(contactId: String) {
+        messageDao.markIncomingAsRead(contactId)
+    }
+
+    override suspend fun deleteConversation(contactId: String) {
+        messageDao.deleteMessagesForContact(contactId)
+    }
+
+    override fun getMessageCount(contactId: String): Flow<Int> =
+        messageDao.countMessagesForContact(contactId)
+
+    override fun getAttachmentCount(contactId: String): Flow<Int> =
+        messageDao.countAttachmentsForContact(contactId)
 }

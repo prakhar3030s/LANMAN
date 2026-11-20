@@ -1,17 +1,20 @@
 package com.example.lanman.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -24,48 +27,59 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.domain.model.ChatListContact
+import com.example.lanman.ui.common.AppIcons
+import com.example.lanman.ui.common.ContactAvatar
+import com.example.lanman.ui.common.EmptyState
+import com.example.lanman.ui.common.GlassDialog
+import com.example.lanman.ui.common.GlassDialogText
+import com.example.lanman.ui.common.GlassSurface
+import com.example.lanman.ui.common.GlassTextField
+import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.QrCodeIcon
+import com.example.lanman.ui.common.contentWidth
+import com.example.lanman.ui.common.pressable
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.haze
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.*
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatListScreen(
     onNavigateToQr: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToConversation: (String) -> Unit,
     onNavigateToMessageRequests: () -> Unit,
-    viewModel: ChatListViewModel = hiltViewModel(),
-    hazeState: HazeState
+    onNavigateToNewChat: () -> Unit,
+    viewModel: ChatListViewModel = hiltViewModel()
 ) {
     val chatList by viewModel.chatList.collectAsStateWithLifecycle()
+    val requestCount by viewModel.messageRequestCount.collectAsStateWithLifecycle()
+    val mutedIds by viewModel.mutedIds.collectAsStateWithLifecycle()
+
+    var query by remember { mutableStateOf("") }
+    var actionTarget by remember { mutableStateOf<ChatListContact?>(null) }
+    var deleteTarget by remember { mutableStateOf<ChatListContact?>(null) }
+
+    val filtered = remember(chatList, query) {
+        if (query.isBlank()) chatList
+        else chatList.filter { item ->
+            item.contact.displayName.contains(query, ignoreCase = true) ||
+                previewTextOf(item).contains(query, ignoreCase = true)
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .haze(hazeState)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Messages",
-                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                    color = TextPrimary
-                )
-                Row {
+            LanmanTopBar(
+                title = "Messages",
+                actions = {
                     IconButton(onClick = onNavigateToQr) {
                         QrCodeIcon(
                             contentDescription = "Scan a contact QR code",
@@ -80,107 +94,232 @@ fun ChatListScreen(
                         )
                     }
                 }
-            }
+            )
 
-            val requestCount by viewModel.messageRequestCount.collectAsStateWithLifecycle()
-            if (requestCount > 0) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 8.dp)
-                        .clickable { onNavigateToMessageRequests() },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = "Requests",
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Text(
-                            text = "$requestCount Message Request${if (requestCount > 1) "s" else ""}",
-                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                }
-            }
-
-            // Chat List
-            if (chatList.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = "No contacts yet.\nTap the QR button above to scan someone's code.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = TextSecondary,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Column(modifier = Modifier.contentWidth().fillMaxHeight()) {
+                    GlassTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = "Search conversations",
+                        leadingIcon = Icons.Default.Search,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                     )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 80.dp)
-                ) {
-                    items(chatList, key = { it.contact.id }) { item ->
-                        ChatListRow(
-                            item = item,
-                            onClick = { onNavigateToConversation(item.contact.id) }
-                        )
+
+                    if (requestCount > 0) {
+                        GlassSurface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .pressable { onNavigateToMessageRequests() },
+                            shape = RoundedCornerShape(16.dp),
+                            tint = ElectricCyan.copy(alpha = 0.12f)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(ElectricCyan.copy(alpha = 0.18f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = ElectricCyan,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(14.dp))
+                                Text(
+                                    text = "$requestCount Message Request${if (requestCount > 1) "s" else ""}",
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = TextPrimary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = ElectricCyan
+                                )
+                            }
+                        }
                     }
+
+                    if (filtered.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (chatList.isEmpty()) {
+                                EmptyState(
+                                    icon = AppIcons.Chat,
+                                    title = "No conversations yet",
+                                    message = "Pair with someone on your network by scanning their QR code.",
+                                    actionLabel = "Scan a code",
+                                    onAction = onNavigateToQr
+                                )
+                            } else {
+                                EmptyState(
+                                    icon = Icons.Default.Search,
+                                    title = "No matches",
+                                    message = "No conversation matches \u201C$query\u201D."
+                                )
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 96.dp)
+                        ) {
+                            items(filtered, key = { it.contact.id }) { item ->
+                                ChatListRow(
+                                    item = item,
+                                    isMuted = item.contact.id in mutedIds,
+                                    onClick = { onNavigateToConversation(item.contact.id) },
+                                    onLongClick = { actionTarget = item }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                FloatingActionButton(
+                    onClick = onNavigateToNewChat,
+                    containerColor = ElectricCyan,
+                    contentColor = Color.Black,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(24.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "New chat")
                 }
             }
         }
+    }
+
+    actionTarget?.let { target ->
+        ModalBottomSheet(
+            onDismissRequest = { actionTarget = null },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Column(modifier = Modifier.padding(bottom = 24.dp)) {
+                Text(
+                    text = target.contact.displayName,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = TextPrimary,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+                SheetAction(
+                    icon = AppIcons.MarkChatRead,
+                    label = "Mark as read",
+                    onClick = {
+                        viewModel.markRead(target.contact.id)
+                        actionTarget = null
+                    }
+                )
+                SheetAction(
+                    icon = if (target.contact.id in mutedIds) AppIcons.VolumeUp else AppIcons.VolumeOff,
+                    label = if (target.contact.id in mutedIds) "Unmute notifications" else "Mute notifications",
+                    onClick = {
+                        viewModel.toggleMute(target.contact.id)
+                        actionTarget = null
+                    }
+                )
+                SheetAction(
+                    icon = Icons.Default.Delete,
+                    label = "Delete chat",
+                    tint = MaterialTheme.colorScheme.error,
+                    onClick = {
+                        deleteTarget = target
+                        actionTarget = null
+                    }
+                )
+            }
+        }
+    }
+
+    deleteTarget?.let { target ->
+        GlassDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = "Delete chat?",
+            confirmLabel = "Delete",
+            destructive = true,
+            onConfirm = {
+                viewModel.deleteChat(target.contact.id)
+                deleteTarget = null
+            }
+        ) {
+            GlassDialogText(
+                "Every message with ${target.contact.displayName} will be removed from this device. " +
+                    "The contact stays paired."
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    tint: Color = TextPrimary
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pressable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint)
+        Spacer(modifier = Modifier.width(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
     }
 }
 
 @Composable
 fun ChatListRow(
     item: ChatListContact,
-    onClick: () -> Unit
+    isMuted: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            .pressable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Presence Dot
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(if (item.isOnline) ElectricCyan else Color.DarkGray)
-                .semantics {
-                    contentDescription = if (item.isOnline) "Online" else "Offline"
-                }
+        ContactAvatar(
+            displayName = item.contact.displayName,
+            size = 52.dp,
+            isOnline = item.isOnline,
+            modifier = Modifier.semantics {
+                contentDescription = if (item.isOnline) "Online" else "Offline"
+            }
         )
 
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(14.dp))
 
-        // Name & Message
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.contact.displayName,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = TextPrimary
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val previewText = item.lastMessageContent?.let { bytes ->
-                val raw = String(bytes, StandardCharsets.UTF_8)
-                when {
-                    raw.startsWith("voice:") -> "Voice message"
-                    raw.startsWith("File: ") -> "File · ${raw.removePrefix("File: ")}"
-                    else -> raw
-                }
-            } ?: "Say hello"
+            Spacer(modifier = Modifier.height(3.dp))
+
             Text(
-                text = previewText,
+                text = previewTextOf(item),
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
                 maxLines = 1,
@@ -188,49 +327,71 @@ fun ChatListRow(
             )
         }
 
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
-        // Time & Unread
-        Column(horizontalAlignment = Alignment.End) {
-            val timestamp = item.lastMessageTimestamp ?: item.contact.addedAt
+        // Time on the same baseline as the name, unread count beneath it.
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Top) {
             Text(
-                text = formatTimestamp(timestamp),
-                style = MaterialTheme.typography.bodySmall,
+                text = formatTimestamp(item.lastMessageTimestamp ?: item.contact.addedAt),
+                style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary
             )
-            
-            if (item.unreadCount > 0) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(CircleShape)
-                        .background(ElectricCyan)
-                        .semantics {
-                            contentDescription = "${item.unreadCount} unread messages"
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (item.unreadCount > 99) "99+" else item.unreadCount.toString(),
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = Color.Black
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isMuted) {
+                    Icon(
+                        imageVector = AppIcons.VolumeOff,
+                        contentDescription = "Muted",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(16.dp)
                     )
+                }
+                if (item.unreadCount > 0) {
+                    if (isMuted) Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(ElectricCyan)
+                            .semantics {
+                                contentDescription = "${item.unreadCount} unread messages"
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (item.unreadCount > 99) "99+" else item.unreadCount.toString(),
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = Color.Black
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+private fun previewTextOf(item: ChatListContact): String {
+    return item.lastMessageContent?.let { bytes ->
+        val raw = String(bytes, StandardCharsets.UTF_8)
+        when {
+            raw.startsWith("voice:") -> "Voice message"
+            raw.startsWith("File: ") -> "File \u00B7 ${raw.removePrefix("File: ")}"
+            else -> raw
+        }
+    } ?: "Say hello"
+}
+
 private fun formatTimestamp(timestamp: Long): String {
     val date = Date(timestamp)
     val now = Date()
-    
+
     val format = if (date.date == now.date && date.month == now.month && date.year == now.year) {
         SimpleDateFormat("HH:mm", Locale.getDefault())
     } else {
         SimpleDateFormat("MMM dd", Locale.getDefault())
     }
-    
+
     return format.format(date)
 }

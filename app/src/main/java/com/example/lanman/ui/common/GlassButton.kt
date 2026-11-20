@@ -29,7 +29,8 @@ fun GlassButton(
     isPrimary: Boolean = false,
     enabled: Boolean = true
 ) {
-    val tint = if (isPrimary) ElectricCyan.copy(alpha = 0.2f) else GlassButtonTint
+    // Primary actions need a filled accent: black label on a 20% cyan tint was ~1.3:1.
+    val tint = if (isPrimary) ElectricCyan.copy(alpha = 0.9f) else GlassButtonTint
     val textColor = if (enabled) {
         if (isPrimary) Black else TextPrimary
     } else {

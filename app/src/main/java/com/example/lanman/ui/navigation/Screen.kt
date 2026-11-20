@@ -14,4 +14,5 @@ sealed class Screen(val route: String) {
         fun createRoute(contactId: String) = "contact_detail/$contactId"
     }
     object MessageRequests : Screen("message_requests")
+    object BlockedContacts : Screen("blocked_contacts")
 }

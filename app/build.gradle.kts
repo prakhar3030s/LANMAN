@@ -66,9 +66,24 @@ android {
     buildFeatures {
         compose = true
     }
+    // One APK per CPU architecture instead of a ~100 MB universal APK that ships every ABI.
+    // Gradle installs the slice that matches the connected device.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     packaging {
         resources {
             excludes += setOf("libsignal_jni*.dylib", "signal_jni*.dll")
+        }
+        jniLibs {
+            // Shipping artifact of libsignal-android; only used by its own instrumentation tests.
+            excludes += "**/libsignal_jni_testing.so"
         }
     }
 }
@@ -95,7 +110,6 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.ui.text.google.fonts)
 
     // Navigation
     implementation(libs.androidx.navigation.compose)
@@ -153,9 +167,6 @@ dependencies {
     androidTestImplementation(libs.hilt.android.testing)
     debugImplementation(libs.androidx.compose.ui.tooling)
     
-    // Haze (Glassmorphism)
-    implementation(libs.haze)
-    implementation(libs.haze.materials)
     
     // Coil (Image Loading)
     implementation(libs.coil.compose)

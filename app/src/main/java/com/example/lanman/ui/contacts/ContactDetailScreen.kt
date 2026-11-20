@@ -1,160 +1,184 @@
-﻿package com.example.lanman.ui.contacts
+package com.example.lanman.ui.contacts
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.lanman.ui.common.ContactAvatar
+import com.example.lanman.ui.common.GlassButton
+import com.example.lanman.ui.common.GlassDialog
+import com.example.lanman.ui.common.GlassDialogText
 import com.example.lanman.ui.common.GlassSurface
+import com.example.lanman.ui.common.LanmanTopBar
+import com.example.lanman.ui.common.contentWidth
 import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.Black
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
-import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.haze
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactDetailScreen(
     contactId: String,
     onNavigateBack: () -> Unit,
     viewModel: ContactListViewModel = hiltViewModel()
 ) {
-    val contacts by viewModel.contacts.collectAsState()
+    val contacts by viewModel.contacts.collectAsStateWithLifecycle()
     val presence = contacts.find { it.contact.id == contactId }
-    val hazeState = remember { HazeState() }
-    
+    val stats by remember(contactId) { viewModel.stats(contactId) }
+        .collectAsStateWithLifecycle(initialValue = 0 to 0)
+
     var showRemoveDialog by remember { mutableStateOf(false) }
 
     if (showRemoveDialog) {
-        AlertDialog(
+        GlassDialog(
             onDismissRequest = { showRemoveDialog = false },
-            title = { Text("Remove Contact") },
-            text = { Text("Are you sure you want to remove ${presence?.contact?.displayName}? This will permanently delete all message history and close active connections.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showRemoveDialog = false
-                        viewModel.removeContact(contactId)
-                        onNavigateBack()
-                    }
-                ) {
-                    Text("Remove", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRemoveDialog = false }) {
-                    Text("Cancel", color = TextPrimary)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    }
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize().haze(hazeState),
-        containerColor = Black,
-        topBar = {
-            TopAppBar(
-                title = { Text("Contact Info", color = TextPrimary, fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            title = "Remove contact?",
+            confirmLabel = "Remove",
+            destructive = true,
+            onConfirm = {
+                showRemoveDialog = false
+                viewModel.removeContact(contactId)
+                onNavigateBack()
+            }
+        ) {
+            GlassDialogText(
+                "${presence?.contact?.displayName ?: "This contact"} will be unpaired, its message " +
+                    "history deleted and active connections closed."
             )
         }
-    ) { padding ->
-        if (presence != null) {
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        LanmanTopBar(
+            title = "Contact Info",
+            onBack = onNavigateBack
+        )
+
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(16.dp),
+                    .contentWidth()
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Avatar placeholder
-                Box(
-                    modifier = Modifier
-                        .size(100.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = presence.contact.displayName.take(1).uppercase(),
-                        style = MaterialTheme.typography.displayMedium,
-                        color = TextPrimary
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(24.dp))
-                
+                Spacer(modifier = Modifier.height(8.dp))
+
+                ContactAvatar(
+                    displayName = presence?.contact?.displayName ?: "?",
+                    size = 104.dp,
+                    isOnline = presence?.isOnline == true
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
                 Text(
-                    text = presence.contact.displayName,
-                    style = MaterialTheme.typography.headlineMedium,
+                    text = presence?.contact?.displayName ?: "Contact",
+                    style = MaterialTheme.typography.headlineSmall,
                     color = TextPrimary,
                     fontWeight = FontWeight.Bold
                 )
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(12.dp)
-                            .clip(CircleShape)
-                            .background(if (presence.isOnline) ElectricCyan else Color.Gray)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (presence.isOnline) "Online" else "Offline",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (presence.isOnline) ElectricCyan else TextSecondary
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(32.dp))
-                
-                GlassSurface(
 
-                    modifier = Modifier.fillMaxWidth()
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Text(
+                    text = if (presence?.isOnline == true) "Online" else "Offline",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (presence?.isOnline == true) ElectricCyan else TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                GlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("Paired Since", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-                        Text(
-                            text = dateFormat.format(Date(presence.contact.addedAt)),
-                            color = TextPrimary,
-                            style = MaterialTheme.typography.bodyLarge
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
+                        val timeFormat = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
+                        val contact = presence?.contact
+
+                        MetaRow(
+                            label = "Paired since",
+                            value = contact?.let { dateFormat.format(Date(it.addedAt)) } ?: "\u2014"
+                        )
+                        MetaDivider()
+                        MetaRow(
+                            label = "Last seen",
+                            value = contact?.lastSeenAt?.let { timeFormat.format(Date(it)) } ?: "Not seen yet"
+                        )
+                        MetaDivider()
+                        MetaRow(
+                            label = "Connected via",
+                            value = contact?.lastKnownIp ?: "No address yet"
+                        )
+                        MetaDivider()
+                        MetaRow(
+                            label = "Messages",
+                            value = stats.first.toString()
+                        )
+                        MetaDivider()
+                        MetaRow(
+                            label = "Files & voice notes",
+                            value = stats.second.toString()
                         )
                     }
                 }
-                
-                Spacer(modifier = Modifier.weight(1f))
-                
-                Button(
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                GlassButton(
+                    text = "Remove Contact",
                     onClick = { showRemoveDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                     modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Remove Contact", color = MaterialTheme.colorScheme.onErrorContainer)
-                }
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
+}
+
+@Composable
+private fun MetaRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextPrimary
+        )
+    }
+}
+
+@Composable
+private fun MetaDivider() {
+    Divider(color = Color.White.copy(alpha = 0.08f))
 }
