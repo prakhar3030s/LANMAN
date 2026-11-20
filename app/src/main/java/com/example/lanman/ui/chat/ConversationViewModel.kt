@@ -131,6 +131,22 @@ class ConversationViewModel @Inject constructor(
         }
     }
 
+    /** Re-queues a failed message; the dispatcher retries it on the next flush. */
+    fun retryMessage(messageId: String, transferId: String?) {
+        viewModelScope.launch {
+            transferId?.let { progressTracker.clearProgress(it) }
+            messageRepository.updateMessageStatus(messageId, MessageStatus.PENDING)
+        }
+    }
+
+    /** Stops an outgoing transfer and marks it failed so the user can retry it later. */
+    fun cancelTransfer(messageId: String, transferId: String?) {
+        viewModelScope.launch {
+            messageRepository.updateMessageStatus(messageId, MessageStatus.FAILED)
+            transferId?.let { progressTracker.clearProgress(it) }
+        }
+    }
+
     fun markAsRead(messageId: String) {
         viewModelScope.launch {
             markMessageReadUseCase(messageId)

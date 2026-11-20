@@ -96,7 +96,10 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                     
-                                    composable(Screen.MessageRequests.route) {
+                                    composable(
+                                        route = Screen.MessageRequests.route,
+                                        deepLinks = listOf(androidx.navigation.navDeepLink { uriPattern = "lanman://requests" })
+                                    ) {
                                         com.example.lanman.ui.chat.MessageRequestsScreen(
                                             onNavigateBack = { navController.popBackStack() }
                                         )

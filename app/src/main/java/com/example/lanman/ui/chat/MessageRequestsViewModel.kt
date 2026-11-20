@@ -14,6 +14,7 @@ import com.example.lanman.domain.network.protocol.Frame
 import com.example.lanman.domain.repository.ContactRepository
 import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.repository.MessageRequestRepository
+import com.example.lanman.data.security.BlockedContactsStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -27,8 +28,12 @@ class MessageRequestsViewModel @Inject constructor(
     private val messageRequestRepository: MessageRequestRepository,
     private val contactRepository: ContactRepository,
     private val messageRepository: MessageRepository,
-    private val connectionManager: ConnectionManager
+    private val connectionManager: ConnectionManager,
+    private val blockedContactsStore: BlockedContactsStore
 ) : ViewModel() {
+
+    /** Kept only so a declined request can be restored from the undo snackbar. */
+    private var lastDeclined: MessageRequest? = null
 
     val requests: StateFlow<List<MessageRequest>> = messageRequestRepository.getAllMessageRequests()
         .stateIn(
@@ -91,6 +96,24 @@ class MessageRequestsViewModel @Inject constructor(
 
     fun rejectRequest(request: MessageRequest) {
         viewModelScope.launch {
+            lastDeclined = request
+            messageRequestRepository.deleteMessageRequest(request.contactId)
+        }
+    }
+
+    fun undoReject() {
+        val request = lastDeclined ?: return
+        lastDeclined = null
+        viewModelScope.launch {
+            messageRequestRepository.addMessageRequest(request)
+        }
+    }
+
+    /** Declines the request and drops every future message from that contact. */
+    fun blockRequest(request: MessageRequest) {
+        viewModelScope.launch {
+            blockedContactsStore.block(request.contactId)
+            lastDeclined = null
             messageRequestRepository.deleteMessageRequest(request.contactId)
         }
     }

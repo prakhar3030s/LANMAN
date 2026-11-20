@@ -1,59 +1,73 @@
 package com.example.lanman.ui.chat.components
 
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.example.lanman.domain.model.FileTransfer
 import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
 import com.example.lanman.domain.model.MessageStatus
 import com.example.lanman.domain.model.MessageType
 import com.example.lanman.ui.chat.MessageUiModel
 import com.example.lanman.ui.common.GlassSurface
+import com.example.lanman.ui.common.MediaActions
 import com.example.lanman.ui.common.deliverySweep
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
-import dev.chrisbanes.haze.HazeState
-import java.nio.charset.StandardCharsets
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.FileProvider
-import android.content.Intent
-import android.net.Uri
-import coil.compose.AsyncImage
 import java.io.File
-
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.ui.text.font.FontWeight
+import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun MessageCard(
     uiModel: MessageUiModel,
+    onRetry: () -> Unit = {},
+    onCancel: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val message = uiModel.message
     val isOutgoing = message.direction == MessageDirection.OUTGOING
     val isConfirmed = message.status == MessageStatus.DELIVERED || message.status == MessageStatus.READ
     val isFailed = message.status == MessageStatus.FAILED
-    
+
     val alignment = if (isOutgoing) Alignment.CenterEnd else Alignment.CenterStart
     val shape = if (isOutgoing) {
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
@@ -67,56 +81,69 @@ fun MessageCard(
     } else {
         Color.White.copy(alpha = if (isConfirmed) 0.10f else 0.03f)
     }
-    
+
     val textColor = if (isConfirmed) TextPrimary else TextPrimary.copy(alpha = 0.6f)
 
     val context = LocalContext.current
-    
-    // Tap handlers for files
+    val fileTransfer = uiModel.fileTransfer
+    var showFileActions by remember { mutableStateOf(false) }
+
     // Only openable once the transfer is complete; a pending file has no finished content yet.
-    val clickModifier = if (isConfirmed && message.type == MessageType.FILE && uiModel.fileTransfer != null) {
-        Modifier.pointerInput(Unit) {
+    val fileTapModifier = if (isConfirmed && message.type == MessageType.FILE && fileTransfer != null) {
+        Modifier.pointerInput(fileTransfer.localUri) {
             detectTapGestures(
                 onTap = {
-                    try {
-                        val uri = if (uiModel.fileTransfer.localUri.startsWith("content://")) {
-                            android.net.Uri.parse(uiModel.fileTransfer.localUri)
-                        } else {
-                            val file = File(uiModel.fileTransfer.localUri)
-                            if (!file.exists()) return@detectTapGestures
-                            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                        }
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, uiModel.fileTransfer.mimeType)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Open File"))
-                    } catch (e: Exception) {
-                        android.util.Log.e("MessageCard", "Failed to open file", e)
+                    if (!MediaActions.openFile(context, fileTransfer.localUri, fileTransfer.mimeType)) {
+                        Toast.makeText(context, "Could not open this file", Toast.LENGTH_SHORT).show()
                     }
                 },
-                onLongPress = {
-                    try {
-                        val uri = if (uiModel.fileTransfer.localUri.startsWith("content://")) {
-                            android.net.Uri.parse(uiModel.fileTransfer.localUri)
-                        } else {
-                            val file = File(uiModel.fileTransfer.localUri)
-                            if (!file.exists()) return@detectTapGestures
-                            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                        }
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = uiModel.fileTransfer.mimeType
-                            putExtra(Intent.EXTRA_STREAM, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(Intent.createChooser(intent, "Share File"))
-                    } catch (e: Exception) {
-                        android.util.Log.e("MessageCard", "Failed to share file", e)
-                    }
-                }
+                onLongPress = { showFileActions = true }
             )
         }
     } else Modifier
+
+    if (showFileActions && fileTransfer != null) {
+        AlertDialog(
+            onDismissRequest = { showFileActions = false },
+            title = {
+                Text(
+                    text = fileTransfer.fileName,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            text = {
+                Column {
+                    DialogAction("Open") {
+                        showFileActions = false
+                        MediaActions.openFile(context, fileTransfer.localUri, fileTransfer.mimeType)
+                    }
+                    DialogAction("Share") {
+                        showFileActions = false
+                        MediaActions.shareFile(context, fileTransfer.localUri, fileTransfer.mimeType)
+                    }
+                    DialogAction("Save to Downloads") {
+                        showFileActions = false
+                        val saved = MediaActions.saveToDownloads(
+                            context,
+                            fileTransfer.localUri,
+                            fileTransfer.fileName,
+                            fileTransfer.mimeType
+                        )
+                        Toast.makeText(
+                            context,
+                            if (saved) "Saved to Downloads/LANMAN" else "Could not save this file",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showFileActions = false }) { Text("Close") }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -129,25 +156,24 @@ fun MessageCard(
             modifier = Modifier
                 .widthIn(max = 280.dp)
                 .deliverySweep(message.status)
-                .then(clickModifier),
+                .then(fileTapModifier),
             shape = shape,
             tint = baseTint
         ) {
             Column(
                 modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp, bottom = 10.dp)
             ) {
-                // Content
                 val isFile = message.type == MessageType.FILE
                 val isVoice = message.type == MessageType.VOICE
 
                 if (isFile || isVoice) {
-                    val fileTransfer = uiModel.fileTransfer
                     if (fileTransfer != null) {
                         val isVideo = fileTransfer.mimeType.startsWith("video/")
                         val isImage = fileTransfer.mimeType.startsWith("image/")
                         val isMedia = isVideo || isImage
-                        
+
                         val progressVal = (if (message.status == MessageStatus.SENT) 1f else uiModel.progress ?: 0f).coerceIn(0f, 1f)
+                        val percent = (progressVal * 100).toInt()
 
                         if (isMedia) {
                             // Telegram-style Media Card (Video / Image)
@@ -160,14 +186,14 @@ fun MessageCard(
                             ) {
                                 val imageModel: Any? = if (!isConfirmed && fileTransfer.thumbnailUri == null) null else if (fileTransfer.thumbnailUri != null) {
                                     if (fileTransfer.thumbnailUri.startsWith("content://")) {
-                                        android.net.Uri.parse(fileTransfer.thumbnailUri)
+                                        Uri.parse(fileTransfer.thumbnailUri)
                                     } else {
                                         File(fileTransfer.thumbnailUri)
                                     }
                                 } else {
                                     File(fileTransfer.localUri)
                                 }
-                                
+
                                 val imageRequest = coil.request.ImageRequest.Builder(context)
                                     .data(imageModel)
                                     .apply {
@@ -216,7 +242,11 @@ fun MessageCard(
                                         ) {
                                             CircularProgressIndicator(
                                                 progress = progressVal,
-                                                modifier = Modifier.size(44.dp),
+                                                modifier = Modifier
+                                                    .size(44.dp)
+                                                    .semantics {
+                                                        contentDescription = "Transfer $percent percent complete"
+                                                    },
                                                 color = ElectricCyan,
                                                 trackColor = Color.White.copy(alpha = 0.25f),
                                                 strokeWidth = 3.5.dp
@@ -241,14 +271,14 @@ fun MessageCard(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.PlayArrow,
-                                            contentDescription = "Play Video",
+                                            contentDescription = "Play video",
                                             tint = Color.White,
                                             modifier = Modifier.size(34.dp)
                                         )
                                     }
                                 }
 
-                                // Bottom-left file size pill
+                                // Bottom-left size pill
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomStart)
@@ -257,7 +287,11 @@ fun MessageCard(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
+                                        text = if (!isConfirmed && !isFailed) {
+                                            "$percent% · ${formatSize(fileTransfer.fileSizeBytes)}"
+                                        } else {
+                                            formatSize(fileTransfer.fileSizeBytes)
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color.White
                                     )
@@ -304,7 +338,11 @@ fun MessageCard(
                                     ) {
                                         CircularProgressIndicator(
                                             progress = progressVal,
-                                            modifier = Modifier.size(36.dp),
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .semantics {
+                                                    contentDescription = "Transfer $percent percent complete"
+                                                },
                                             color = ElectricCyan,
                                             trackColor = Color.White.copy(alpha = 0.2f),
                                             strokeWidth = 3.dp
@@ -312,7 +350,11 @@ fun MessageCard(
                                         Text("🎙", style = MaterialTheme.typography.titleSmall)
                                     }
                                     Spacer(modifier = Modifier.width(10.dp))
-                                    Text("Voice message...", style = MaterialTheme.typography.bodyMedium, color = textColor)
+                                    Text(
+                                        text = "Voice message · $percent%",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = textColor
+                                    )
                                 }
                             } else {
                                 val durationMs = String(message.content, StandardCharsets.UTF_8).removePrefix("voice:").toLongOrNull() ?: 0L
@@ -352,7 +394,11 @@ fun MessageCard(
                                     } else if (!isConfirmed) {
                                         CircularProgressIndicator(
                                             progress = progressVal,
-                                            modifier = Modifier.size(36.dp),
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .semantics {
+                                                    contentDescription = "Transfer $percent percent complete"
+                                                },
                                             color = ElectricCyan,
                                             trackColor = Color.White.copy(alpha = 0.2f),
                                             strokeWidth = 3.dp
@@ -372,20 +418,24 @@ fun MessageCard(
                                         )
                                     }
                                 }
-                                
+
                                 Spacer(modifier = Modifier.width(12.dp))
-                                
+
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = fileTransfer.fileName,
                                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                         color = textColor,
                                         maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        text = if (isFailed) "Transfer failed" else "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
+                                        text = when {
+                                            isFailed -> "Transfer failed"
+                                            !isConfirmed -> "$percent% of ${formatSize(fileTransfer.fileSizeBytes)}"
+                                            else -> formatSize(fileTransfer.fileSizeBytes)
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = textColor.copy(alpha = 0.7f)
                                     )
@@ -396,34 +446,100 @@ fun MessageCard(
                         Text("Loading transfer info...", color = textColor)
                     }
                 } else {
-                    Text(
-                        text = String(message.content, StandardCharsets.UTF_8),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = textColor
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = String(message.content, StandardCharsets.UTF_8),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = textColor
+                        )
+                    }
                 }
 
-                // Status Affordance & Delivery indication
+                // Status affordance: time, delivery state, and the actions that make sense while
+                // the message is still in flight (cancel) or dead (retry).
                 if (isOutgoing) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.align(Alignment.End),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val icon = if (message.status == MessageStatus.READ) Icons.Default.CheckCircle else Icons.Default.Check
-                        val iconTint = if (message.status == MessageStatus.READ) ElectricCyan else TextSecondary.copy(alpha = 0.7f)
-                        
-                        if (message.status != MessageStatus.PENDING) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = message.status.name,
-                                tint = iconTint,
-                                modifier = Modifier.size(16.dp)
+                        if (!isConfirmed && !isFailed && (isFile || isVoice)) {
+                            Text(
+                                text = "Cancel",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                modifier = Modifier
+                                    .clickable(onClick = onCancel)
+                                    .padding(4.dp)
+                                    .semantics { contentDescription = "Cancel transfer" }
                             )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = formatTime(message.timestamp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        when {
+                            isFailed -> Text(
+                                text = "Failed · Retry",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier
+                                    .clickable(onClick = onRetry)
+                                    .padding(vertical = 2.dp)
+                                    .semantics { contentDescription = "Message failed, tap to retry" }
+                            )
+                            message.status == MessageStatus.PENDING -> Text(
+                                text = "Queued",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                modifier = Modifier.semantics { contentDescription = "Queued, waiting to send" }
+                            )
+                            message.status == MessageStatus.SENT -> Text(
+                                text = "Sending…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                modifier = Modifier.semantics { contentDescription = "Sending" }
+                            )
+                            else -> {
+                                val icon = if (message.status == MessageStatus.READ) Icons.Default.CheckCircle else Icons.Default.Check
+                                val iconTint = if (message.status == MessageStatus.READ) ElectricCyan else TextSecondary.copy(alpha = 0.7f)
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = if (message.status == MessageStatus.READ) "Read" else "Delivered",
+                                    tint = iconTint,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DialogAction(label: String, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(label, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+private fun formatTime(timestamp: Long): String {
+    return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
+}
+
+private fun formatSize(bytes: Long): String {
+    return when {
+        bytes <= 0 -> "Unknown size"
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024f)
+        else -> String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f))
     }
 }

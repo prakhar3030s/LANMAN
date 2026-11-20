@@ -16,12 +16,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.domain.model.ChatListContact
+import com.example.lanman.ui.common.QrCodeIcon
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import com.example.lanman.ui.theme.TextSecondary
@@ -64,9 +67,8 @@ fun ChatListScreen(
                 )
                 Row {
                     IconButton(onClick = onNavigateToQr) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = "Scan QR",
+                        QrCodeIcon(
+                            contentDescription = "Scan a contact QR code",
                             tint = TextPrimary
                         )
                     }
@@ -112,7 +114,7 @@ fun ChatListScreen(
             if (chatList.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "No contacts yet.\nTap the QR icon to connect.",
+                        text = "No contacts yet.\nTap the QR button above to scan someone's code.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = TextSecondary,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -153,6 +155,9 @@ fun ChatListRow(
                 .size(12.dp)
                 .clip(CircleShape)
                 .background(if (item.isOnline) ElectricCyan else Color.DarkGray)
+                .semantics {
+                    contentDescription = if (item.isOnline) "Online" else "Offline"
+                }
         )
 
         Spacer(modifier = Modifier.width(16.dp))
@@ -166,7 +171,14 @@ fun ChatListRow(
             )
             Spacer(modifier = Modifier.height(4.dp))
             
-            val previewText = item.lastMessageContent?.let { String(it, StandardCharsets.UTF_8) } ?: "Say hello"
+            val previewText = item.lastMessageContent?.let { bytes ->
+                val raw = String(bytes, StandardCharsets.UTF_8)
+                when {
+                    raw.startsWith("voice:") -> "Voice message"
+                    raw.startsWith("File: ") -> "File · ${raw.removePrefix("File: ")}"
+                    else -> raw
+                }
+            } ?: "Say hello"
             Text(
                 text = previewText,
                 style = MaterialTheme.typography.bodyMedium,
@@ -193,7 +205,10 @@ fun ChatListRow(
                     modifier = Modifier
                         .size(20.dp)
                         .clip(CircleShape)
-                        .background(ElectricCyan),
+                        .background(ElectricCyan)
+                        .semantics {
+                            contentDescription = "${item.unreadCount} unread messages"
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(

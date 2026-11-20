@@ -17,6 +17,7 @@ import com.example.lanman.domain.repository.MessageRequestRepository
 import com.example.lanman.domain.model.MessageRequest
 import com.example.lanman.domain.network.IncomingFrameEvent
 import com.example.lanman.data.notification.NotificationHelper
+import com.example.lanman.data.security.BlockedContactsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +40,8 @@ class IncomingMessageReceiver @Inject constructor(
     private val notificationHelper: NotificationHelper,
     private val activeConversationTracker: ActiveConversationTracker,
     private val profileRepository: ProfileRepository,
-    private val messageRequestRepository: MessageRequestRepository
+    private val messageRequestRepository: MessageRequestRepository,
+    private val blockedContactsStore: BlockedContactsStore
 ) {
     private val TAG = "IncomingMessageReceiver"
     private var job: Job? = null
@@ -86,6 +88,10 @@ class IncomingMessageReceiver @Inject constructor(
         // A connection is flagged unknown when it opened, but the user can accept the request
         // while it is still open, so re-check the contact table before treating it as unknown.
         if (event.isUnknown && contactRepository.getContactById(contactId).firstOrNull() == null) {
+            if (blockedContactsStore.isBlocked(contactId)) {
+                Log.d(TAG, "Ignoring message from blocked contact $contactId")
+                return
+            }
             val displayName = event.unknownDisplayName ?: "Unknown"
             val identityKey = event.unknownIdentityKey ?: ""
             val request = MessageRequest(
@@ -97,7 +103,11 @@ class IncomingMessageReceiver @Inject constructor(
             )
             messageRequestRepository.addMessageRequest(request)
             Log.d(TAG, "Received message from unknown contact $contactId. Saved as Message Request.")
-            // Ideally fire a local notification for the new request here
+            notificationHelper.showMessageRequestNotification(
+                contactId = contactId,
+                senderName = displayName,
+                preview = request.firstMessageText
+            )
             return
         }
 

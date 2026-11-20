@@ -64,6 +64,7 @@ class MessageDispatcher @Inject constructor(
         const val RETRY_INTERVAL_MS = 5_000L
         const val CONNECTION_STALE_MS = 15_000L
         const val RECONNECT_INTERVAL_MS = 30_000L
+        const val MAX_SEND_FAILURES = 6
     }
 
     fun start(scope: CoroutineScope) {
@@ -164,6 +165,17 @@ class MessageDispatcher @Inject constructor(
     private suspend fun flushUnacknowledgedMessages(myId: String, contactId: String) {
         val messages = messageRepository.getUnacknowledgedMessagesForContact(contactId)
         if (messages.isEmpty()) return
+
+        // A failed message that the user retried is PENDING again: clear its old backoff so the
+        // retry does not sit behind the exponential delay built up by the previous attempt.
+        messages.forEach { message ->
+            if (message.status == MessageStatus.PENDING &&
+                (sendFailures[message.id] ?: 0) >= MAX_SEND_FAILURES
+            ) {
+                sendFailures.remove(message.id)
+                lastSentAttempt.remove(message.id)
+            }
+        }
         
         val now = System.currentTimeMillis()
         val messagesToSend = messages.filter { message ->
@@ -203,7 +215,7 @@ class MessageDispatcher @Inject constructor(
                 val newFailures = (sendFailures[message.id] ?: 0) + 1
                 sendFailures[message.id] = newFailures
                 
-                if (newFailures >= 6) {
+                if (newFailures >= MAX_SEND_FAILURES) {
                     messageRepository.updateMessageStatus(message.id, MessageStatus.FAILED)
                     Log.e(TAG, "Message ${message.id} to $contactId failed $newFailures times. Marked as FAILED.")
                 } else {

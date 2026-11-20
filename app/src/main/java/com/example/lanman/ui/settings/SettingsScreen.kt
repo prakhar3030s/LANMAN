@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
@@ -27,6 +28,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.Black
@@ -44,22 +49,37 @@ fun SettingsScreen(
     hazeState: HazeState
 ) {
     val profile by viewModel.profile.collectAsState()
+    val receivedFilesSize by viewModel.receivedFilesSize.collectAsStateWithLifecycle()
     val context = LocalContext.current
     
     var showEditNameDialog by remember { mutableStateOf(false) }
     var editNameText by remember { mutableStateOf("") }
     
     var showClearDataDialog by remember { mutableStateOf(false) }
+    var showClearFilesDialog by remember { mutableStateOf(false) }
     
-    // Check notification permission
-    var hasNotificationPermission by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            } else {
-                true
+    // Check notification permission. Re-read it on resume, otherwise the subtitle stays stale
+    // after the user comes back from the system settings screen.
+    fun notificationPermissionGranted(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    } else {
+        true
+    }
+
+    var hasNotificationPermission by remember { mutableStateOf(notificationPermissionGranted()) }
+
+    LaunchedEffect(Unit) { viewModel.refreshReceivedFilesSize() }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotificationPermission = notificationPermissionGranted()
+                viewModel.refreshReceivedFilesSize()
             }
-        )
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     if (showEditNameDialog) {
@@ -89,6 +109,28 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showEditNameDialog = false }) {
+                    Text("Cancel", color = TextPrimary)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
+
+    if (showClearFilesDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearFilesDialog = false },
+            title = { Text("Clear received files") },
+            text = { Text("This deletes every file and voice message you have received. Messages will stay in your chats but their attachments can no longer be opened.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearFilesDialog = false
+                    viewModel.clearReceivedFiles()
+                }) {
+                    Text("Delete files", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearFilesDialog = false }) {
                     Text("Cancel", color = TextPrimary)
                 }
             },
@@ -197,6 +239,14 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 SettingsItem(
+                    icon = Icons.Default.Delete,
+                    title = "Received files",
+                    subtitle = if (receivedFilesSize > 0L) "${formatSize(receivedFilesSize)} · Tap to clear" else "Nothing downloaded yet",
+                    titleColor = if (receivedFilesSize > 0L) MaterialTheme.colorScheme.error else TextPrimary,
+                    onClick = { if (receivedFilesSize > 0L) showClearFilesDialog = true }
+                )
+                Divider(color = Color.White.copy(alpha = 0.1f))
+                SettingsItem(
                     icon = Icons.Default.Warning,
                     title = "Clear local data",
                     subtitle = "Wipe keys and history",
@@ -216,6 +266,14 @@ fun SettingsScreen(
             
             Spacer(modifier = Modifier.height(32.dp))
         }
+    }
+}
+
+private fun formatSize(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.0f KB", bytes / 1024f)
+        else -> String.format(java.util.Locale.US, "%.1f MB", bytes / (1024f * 1024f))
     }
 }
 

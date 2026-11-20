@@ -23,7 +23,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -39,6 +43,7 @@ fun VoiceRecordButton(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
     
     var isRecording by remember { mutableStateOf(false) }
@@ -86,6 +91,7 @@ fun VoiceRecordButton(
             isRecording = true
             recordingDurationMs = 0L
             dragOffset = 0f
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         } catch (e: Exception) {
             Log.e("VoiceRecordButton", "Failed to start recording", e)
             try { recorder.release() } catch (releaseError: Exception) {}
@@ -107,6 +113,7 @@ fun VoiceRecordButton(
             mediaRecorder?.release()
             mediaRecorder = null
             isRecording = false
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
             
             if (cancel) {
                 outputFile?.delete()
@@ -188,6 +195,13 @@ fun VoiceRecordButton(
                 .scale(scale)
                 .clip(CircleShape)
                 .background(if (isRecording) Color.Red.copy(alpha = 0.2f) else ElectricCyan.copy(alpha = 0.2f))
+                .semantics {
+                    contentDescription = if (isRecording) {
+                        "Recording, release to send, drag left to cancel"
+                    } else {
+                        "Hold to record a voice message"
+                    }
+                }
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragEnd = {

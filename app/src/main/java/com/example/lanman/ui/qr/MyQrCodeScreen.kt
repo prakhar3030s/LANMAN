@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.ui.common.GlassButton
+import com.example.lanman.ui.common.MediaActions
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.TextPrimary
 import dev.chrisbanes.haze.HazeState
@@ -125,6 +126,25 @@ fun MyQrCodeScreen(
                         },
 
                         isPrimary = true
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    GlassButton(
+                        text = "Save Image",
+                        onClick = {
+                            val saved = MediaActions.saveBitmapToPictures(
+                                context,
+                                currentState.bitmap,
+                                "lanman_qr.png"
+                            )
+                            Toast.makeText(
+                                context,
+                                if (saved) "QR code saved to Pictures/LANMAN" else "Could not save the QR code",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        isPrimary = false
                     )
                 }
             }

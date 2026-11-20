@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.lanman.domain.model.ContactPresence
 import com.example.lanman.ui.common.GlassSurface
+import com.example.lanman.ui.common.QrCodeIcon
 import com.example.lanman.ui.theme.ElectricCyan
 import com.example.lanman.ui.theme.Black
 import com.example.lanman.ui.theme.TextPrimary
@@ -54,7 +55,7 @@ fun ContactListScreen(
                 ),
                 actions = {
                     IconButton(onClick = onNavigateToMyQr) {
-                        Icon(imageVector = Icons.Default.Person, contentDescription = "My QR Code", tint = TextPrimary)
+                        QrCodeIcon(contentDescription = "Show my QR code", tint = TextPrimary)
                     }
                 }
             )

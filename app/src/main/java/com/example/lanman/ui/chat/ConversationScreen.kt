@@ -40,8 +40,7 @@ fun ConversationScreen(
 ) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val contactPresence by viewModel.contactPresence.collectAsStateWithLifecycle()
-    val isTransferActive by viewModel.isTransferActive.collectAsStateWithLifecycle()
-    
+
     val listState = rememberLazyListState()
     val hazeState = remember { HazeState() }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -204,6 +203,12 @@ fun ConversationScreen(
                                 
                                 MessageCard(
                                     uiModel = uiModel,
+                                    onRetry = {
+                                        viewModel.retryMessage(uiModel.message.id, uiModel.fileTransfer?.id)
+                                    },
+                                    onCancel = {
+                                        viewModel.cancelTransfer(uiModel.message.id, uiModel.fileTransfer?.id)
+                                    }
                                 )
                             }
                         }
@@ -244,14 +249,11 @@ fun ConversationScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box {
-                    IconButton(
-                        onClick = { showAttachMenu = true },
-                        enabled = !isTransferActive
-                    ) {
+                    IconButton(onClick = { showAttachMenu = true }) {
                         Icon(
                             imageVector = androidx.compose.material.icons.Icons.Default.Add,
-                            contentDescription = "Attach",
-                            tint = if (isTransferActive) TextSecondary.copy(alpha = 0.5f) else TextPrimary
+                            contentDescription = "Attach a photo or document",
+                            tint = TextPrimary
                         )
                     }
                     

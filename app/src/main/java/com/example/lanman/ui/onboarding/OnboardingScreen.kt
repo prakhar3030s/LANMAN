@@ -75,8 +75,17 @@ fun OnboardingScreen(
             Spacer(modifier = Modifier.height(16.dp))
             
             Text(
-                text = "Enter a display name to get started.",
+                text = "Messages and files go straight between phones on the same Wi-Fi.\nNo servers, no accounts, nothing leaves your network.",
                 style = MaterialTheme.typography.bodyLarge,
+                color = TextPrimary.copy(alpha = 0.7f),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Enter a display name to get started.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = TextPrimary.copy(alpha = 0.7f)
             )
 
