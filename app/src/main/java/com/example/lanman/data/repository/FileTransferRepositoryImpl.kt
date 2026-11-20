@@ -25,4 +25,8 @@ class FileTransferRepositoryImpl @Inject constructor(
     override suspend fun insertFileTransfer(fileTransfer: FileTransfer) {
         fileTransferDao.insertFileTransfer(fileTransfer.toEntity())
     }
+
+    override suspend fun updateLocalUri(transferId: String, localUri: String) {
+        fileTransferDao.updateLocalUri(transferId, localUri)
+    }
 }

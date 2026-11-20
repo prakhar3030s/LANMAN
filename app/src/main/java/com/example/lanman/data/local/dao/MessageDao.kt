@@ -49,6 +49,10 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :status WHERE id = :id")
     suspend fun updateMessageStatus(id: String, status: MessageStatus)
 
+    /** Conditional transition so a late ACK (DELIVERED) is never overwritten by SENT. */
+    @Query("UPDATE messages SET status = :status WHERE id = :id AND status = :currentStatus")
+    suspend fun updateMessageStatusIfCurrent(id: String, currentStatus: MessageStatus, status: MessageStatus)
+
     @Query("SELECT * FROM messages WHERE contactId = :contactId ORDER BY timestamp DESC LIMIT 1")
     fun getLastMessageForContact(contactId: String): Flow<MessageEntity?>
 }

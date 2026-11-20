@@ -13,7 +13,10 @@ import com.example.lanman.domain.security.EncryptionEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileInputStream
@@ -53,6 +56,16 @@ class MessageDispatcher @Inject constructor(
     private val lastSentAttempt = ConcurrentHashMap<String, Long>()
     private val sendFailures = ConcurrentHashMap<String, Int>()
 
+    // Last time we forced a fresh socket for a contact whose queued messages stopped being
+    // acknowledged. A half-open TCP connection accepts writes silently and never delivers.
+    private val lastReconnectAttempt = ConcurrentHashMap<String, Long>()
+
+    private companion object {
+        const val RETRY_INTERVAL_MS = 5_000L
+        const val CONNECTION_STALE_MS = 15_000L
+        const val RECONNECT_INTERVAL_MS = 30_000L
+    }
+
     fun start(scope: CoroutineScope) {
         if (job != null) return
         
@@ -62,33 +75,23 @@ class MessageDispatcher @Inject constructor(
             // Trigger 1: DB changes (new unacknowledged messages)
             launch {
                 messageRepository.getContactsWithUnacknowledgedMessagesFlow().collect { contactIds ->
-                    for (contactId in contactIds) {
-                        if (flushingContacts.putIfAbsent(contactId, true) == null) {
-                            launch {
-                                try {
-                                    flushUnacknowledgedMessages(myId, contactId)
-                                } finally {
-                                    flushingContacts.remove(contactId)
-                                }
-                            }
-                        }
-                    }
+                    contactIds.forEach { contactId -> scheduleFlush(myId, contactId) }
                 }
             }
             
             // Trigger 2: Peer heartbeat received (someone came online)
             launch {
                 networkDiscoveryManager.discoveredPeers.collect { peer ->
-                    val contactId = peer.id
-                    if (flushingContacts.putIfAbsent(contactId, true) == null) {
-                        launch {
-                            try {
-                                flushUnacknowledgedMessages(myId, contactId)
-                            } finally {
-                                flushingContacts.remove(contactId)
-                            }
-                        }
-                    }
+                    scheduleFlush(myId, peer.id)
+                }
+            }
+
+            // Trigger 3: Periodic retry, so a queued message is never left waiting for the
+            // peer to send something (or for the database to change) before it is re-sent.
+            launch {
+                while (isActive) {
+                    delay(RETRY_INTERVAL_MS)
+                    retryUnacknowledged(myId)
                 }
             }
         }
@@ -99,6 +102,63 @@ class MessageDispatcher @Inject constructor(
         job = null
         flushingContacts.clear()
         lastSentAttempt.clear()
+        lastReconnectAttempt.clear()
+        sendFailures.clear()
+    }
+
+    /**
+     * Periodic safety net: retries queued messages while the peer is silent, and replaces a
+     * connection whose writes are no longer being acknowledged (stale/half-open socket).
+     */
+    private suspend fun CoroutineScope.retryUnacknowledged(myId: String) {
+        val contactIds = try {
+            messageRepository.getContactsWithUnacknowledgedMessagesFlow().first()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to query contacts with unacknowledged messages", e)
+            return
+        }
+        if (contactIds.isEmpty()) return
+
+        val now = System.currentTimeMillis()
+        for (contactId in contactIds) {
+            val messages = try {
+                messageRepository.getUnacknowledgedMessagesForContact(contactId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load unacknowledged messages for $contactId", e)
+                continue
+            }
+            if (messages.isEmpty()) continue
+
+            val oldestSilentWrite = messages
+                .filter { it.status == MessageStatus.SENT }
+                .mapNotNull { lastSentAttempt[it.id] }
+                .minOrNull()
+
+            if (oldestSilentWrite != null &&
+                now - oldestSilentWrite > CONNECTION_STALE_MS &&
+                now - (lastReconnectAttempt[contactId] ?: 0L) > RECONNECT_INTERVAL_MS
+            ) {
+                Log.w(TAG, "No ACK from $contactId for ${now - oldestSilentWrite} ms; reconnecting")
+                lastReconnectAttempt[contactId] = now
+                connectionManager.disconnectFrom(contactId)
+                // Retry immediately on the fresh socket instead of waiting out the backoff.
+                messages.forEach { lastSentAttempt.remove(it.id) }
+            }
+
+            scheduleFlush(myId, contactId)
+        }
+    }
+
+    /** Starts a flush for [contactId] unless one is already running for it. */
+    private fun CoroutineScope.scheduleFlush(myId: String, contactId: String) {
+        if (flushingContacts.putIfAbsent(contactId, true) != null) return
+        launch {
+            try {
+                flushUnacknowledgedMessages(myId, contactId)
+            } finally {
+                flushingContacts.remove(contactId)
+            }
+        }
     }
 
     private suspend fun flushUnacknowledgedMessages(myId: String, contactId: String) {
@@ -132,9 +192,12 @@ class MessageDispatcher @Inject constructor(
             
             if (isSuccess) {
                 sendFailures.remove(message.id)
-                if (message.status != MessageStatus.SENT) {
-                    messageRepository.updateMessageStatus(message.id, MessageStatus.SENT)
-                }
+                // Only advance PENDING -> SENT; never downgrade a delivery confirmed by an ACK.
+                messageRepository.updateMessageStatusIfCurrent(
+                    message.id,
+                    MessageStatus.PENDING,
+                    MessageStatus.SENT
+                )
                 Log.d(TAG, "Successfully sent message ${message.id} to $contactId")
             } else {
                 val newFailures = (sendFailures[message.id] ?: 0) + 1

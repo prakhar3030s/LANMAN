@@ -8,4 +8,5 @@ interface FileTransferRepository {
     fun getByMessageId(messageId: String): Flow<FileTransfer?>
     fun getByMessageIds(messageIds: List<String>): Flow<List<FileTransfer>>
     suspend fun insertFileTransfer(fileTransfer: FileTransfer)
+    suspend fun updateLocalUri(transferId: String, localUri: String)
 }

@@ -126,6 +126,8 @@ class ConnectionManagerImpl(
 
     private suspend fun handleIncomingControlConnection(socket: Socket) {
         var contactId: String? = null
+        // Kept outside the try block so cleanup can remove only this connection's map entry.
+        var activeConnection: ActiveConnection? = null
         try {
             val inputStream = socket.getInputStream()
             
@@ -165,6 +167,7 @@ class ConnectionManagerImpl(
                 unknownIdentityKey = if (isUnknown) helloFrame.identityKey else null
             )
             activeConnections[contactId] = connection
+            activeConnection = connection
             
             if (!isUnknown && existingContact?.publicKeyBundle != null) {
                 try {
@@ -181,9 +184,13 @@ class ConnectionManagerImpl(
             Log.e(TAG, "Error handling incoming control connection", e)
         } finally {
             try { socket.close() } catch (e: Exception) {}
-            if (contactId != null) {
-                activeConnections.remove(contactId)
-                Log.d(TAG, "Cleaned up connection map for $contactId")
+            val id = contactId
+            val ownConnection = activeConnection
+            if (id != null && ownConnection != null) {
+                // Only drop the entry if it is still ours: a newer connection for this contact
+                // may have replaced it while this socket was shutting down.
+                activeConnections.remove(id, ownConnection)
+                Log.d(TAG, "Cleaned up connection map for $id")
             }
         }
     }
@@ -335,7 +342,7 @@ class ConnectionManagerImpl(
                         readControlLoop(contactId, connection, socket.getInputStream())
                     } finally {
                         try { socket.close() } catch (e: Exception) {}
-                        activeConnections.remove(contactId)
+                        activeConnections.remove(contactId, connection)
                         Log.d(TAG, "Cleaned up connection map for $contactId (outbound)")
                     }
                 }
@@ -428,13 +435,15 @@ class ConnectionManagerImpl(
                 ?: return Result.failure(Exception("Failed to acquire connection after connectTo"))
         }
         
+        val conn = connection
         return try {
-            sendFrameInternal(connection, frame, flush)
+            sendFrameInternal(conn, frame, flush)
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send frame to $contactId", e)
-            try { connection.socket.close() } catch (ex: Exception) {}
-            activeConnections.remove(contactId)
+            try { conn.socket.close() } catch (ex: Exception) {}
+            // Remove only this connection: the map may already hold a newer, healthy one.
+            activeConnections.remove(contactId, conn)
             Result.failure(e)
         }
     }

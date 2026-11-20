@@ -18,4 +18,7 @@ interface FileTransferDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFileTransfer(entity: FileTransferEntity)
+
+    @Query("UPDATE file_transfers SET localUri = :localUri WHERE id = :transferId")
+    suspend fun updateLocalUri(transferId: String, localUri: String)
 }

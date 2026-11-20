@@ -13,5 +13,6 @@ interface MessageRepository {
     suspend fun insertMessage(message: Message)
     suspend fun insertIfNotExists(message: Message): Boolean
     suspend fun updateMessageStatus(id: String, status: MessageStatus)
+    suspend fun updateMessageStatusIfCurrent(id: String, currentStatus: MessageStatus, status: MessageStatus)
     fun getLastMessageForContact(contactId: String): Flow<Message?>
 }

@@ -51,6 +51,14 @@ class MessageRepositoryImpl @Inject constructor(
         messageDao.updateMessageStatus(id, status)
     }
 
+    override suspend fun updateMessageStatusIfCurrent(
+        id: String,
+        currentStatus: MessageStatus,
+        status: MessageStatus
+    ) {
+        messageDao.updateMessageStatusIfCurrent(id, currentStatus, status)
+    }
+
     override fun getLastMessageForContact(contactId: String): Flow<Message?> {
         return messageDao.getLastMessageForContact(contactId).map { it?.toDomain() }
     }

@@ -34,9 +34,21 @@ class SendMessageUseCase @Inject constructor(
         
         val messageId = UUID.randomUUID().toString()
         val contentBytes = text.toByteArray(StandardCharsets.UTF_8)
-        
+
+        // Persist before sending: the receiver ACKs immediately, and an ACK that arrives
+        // before the row exists is dropped, leaving the message stuck as unconfirmed.
+        val message = Message(
+            id = messageId,
+            contactId = contactId,
+            direction = MessageDirection.OUTGOING,
+            type = MessageType.TEXT,
+            content = contentBytes,
+            status = MessageStatus.PENDING,
+            timestamp = now
+        )
+        messageRepository.insertMessage(message)
+
         // Fast-Path: If connection is already open, send directly over socket immediately
-        var dispatchedImmediately = false
         if (connectionManager.hasActiveConnection(contactId)) {
             try {
                 val myId = profileRepository.getProfile().firstOrNull()?.id
@@ -51,25 +63,18 @@ class SendMessageUseCase @Inject constructor(
                     )
                     val result = connectionManager.sendFrame(contactId, frame)
                     if (result.isSuccess) {
-                        dispatchedImmediately = true
+                        // Stay DELIVERED if the ACK already landed while we were sending.
+                        messageRepository.updateMessageStatusIfCurrent(
+                            messageId,
+                            MessageStatus.PENDING,
+                            MessageStatus.SENT
+                        )
                         Log.d(TAG, "Fast-path delivered message $messageId directly over active socket")
                     }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Fast-path send failed, will persist as PENDING for dispatcher", e)
+                Log.w(TAG, "Fast-path send failed, will be retried by the dispatcher", e)
             }
         }
-
-        val message = Message(
-            id = messageId,
-            contactId = contactId,
-            direction = MessageDirection.OUTGOING,
-            type = MessageType.TEXT,
-            content = contentBytes,
-            status = if (dispatchedImmediately) MessageStatus.SENT else MessageStatus.PENDING,
-            timestamp = now
-        )
-        
-        messageRepository.insertMessage(message)
     }
 }

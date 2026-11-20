@@ -41,6 +41,7 @@ import java.io.File
 
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.text.font.FontWeight
 
 @Composable
@@ -51,6 +52,7 @@ fun MessageCard(
     val message = uiModel.message
     val isOutgoing = message.direction == MessageDirection.OUTGOING
     val isConfirmed = message.status == MessageStatus.DELIVERED || message.status == MessageStatus.READ
+    val isFailed = message.status == MessageStatus.FAILED
     
     val alignment = if (isOutgoing) Alignment.CenterEnd else Alignment.CenterStart
     val shape = if (isOutgoing) {
@@ -71,7 +73,8 @@ fun MessageCard(
     val context = LocalContext.current
     
     // Tap handlers for files
-    val clickModifier = if (message.type == MessageType.FILE && uiModel.fileTransfer != null) {
+    // Only openable once the transfer is complete; a pending file has no finished content yet.
+    val clickModifier = if (isConfirmed && message.type == MessageType.FILE && uiModel.fileTransfer != null) {
         Modifier.pointerInput(Unit) {
             detectTapGestures(
                 onTap = {
@@ -155,7 +158,7 @@ fun MessageCard(
                                     .clip(RoundedCornerShape(12.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val imageModel: Any = if (fileTransfer.thumbnailUri != null) {
+                                val imageModel: Any? = if (!isConfirmed && fileTransfer.thumbnailUri == null) null else if (fileTransfer.thumbnailUri != null) {
                                     if (fileTransfer.thumbnailUri.startsWith("content://")) {
                                         android.net.Uri.parse(fileTransfer.thumbnailUri)
                                     } else {
@@ -182,7 +185,22 @@ fun MessageCard(
                                     contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                 )
 
-                                if (!isConfirmed) {
+                                if (isFailed) {
+                                    // Terminal failure: no progress ring, this file can never arrive
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .background(Color.Black.copy(alpha = 0.55f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Transfer failed",
+                                            tint = Color.White.copy(alpha = 0.9f),
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                    }
+                                } else if (!isConfirmed) {
                                     // Progress Ring Overlay (While uploading or downloading)
                                     Box(
                                         modifier = Modifier
@@ -246,7 +264,33 @@ fun MessageCard(
                                 }
                             }
                         } else if (isVoice) {
-                            if (!isConfirmed) {
+                            if (isFailed) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().padding(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.error.copy(alpha = 0.18f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Transfer failed",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = "Voice message failed",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = textColor
+                                    )
+                                }
+                            } else if (!isConfirmed) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.fillMaxWidth().padding(4.dp)
@@ -298,7 +342,14 @@ fun MessageCard(
                                         .background(ElectricCyan.copy(alpha = 0.15f)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (!isConfirmed) {
+                                    if (isFailed) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = "Transfer failed",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    } else if (!isConfirmed) {
                                         CircularProgressIndicator(
                                             progress = progressVal,
                                             modifier = Modifier.size(36.dp),
@@ -334,7 +385,7 @@ fun MessageCard(
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
-                                        text = "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
+                                        text = if (isFailed) "Transfer failed" else "${String.format("%.1f", fileTransfer.fileSizeBytes / (1024f * 1024f))} MB",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = textColor.copy(alpha = 0.7f)
                                     )
