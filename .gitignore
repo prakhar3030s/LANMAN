@@ -28,6 +28,7 @@ gen/
 out/
 build/
 **/build/
+app/release/
 lint-results*.html
 lint-results*.xml
 build_output.txt

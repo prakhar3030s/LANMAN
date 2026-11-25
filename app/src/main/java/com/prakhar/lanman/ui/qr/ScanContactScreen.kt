@@ -91,25 +91,6 @@ fun ScanContactScreen(
         }
     }
 
-    // Own CameraX executor and ML Kit scanner lifecycle so leaving the screen never leaks threads.
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-    val barcodeScanner = remember {
-        BarcodeScanning.getClient(
-            BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .build()
-        )
-    }
-    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            runCatching { cameraProviderRef?.unbindAll() }
-            runCatching { barcodeScanner.close() }
-            analysisExecutor.shutdown()
-        }
-    }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -120,6 +101,27 @@ fun ScanContactScreen(
             is ScanContactState.Scanning -> {
                 Column(modifier = Modifier.fillMaxSize()) {
                     if (hasCameraPermission) {
+                        // Own CameraX executor and ML Kit scanner lifecycle only while camera permission is granted.
+                        val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+                        val barcodeScanner = remember {
+                            runCatching {
+                                BarcodeScanning.getClient(
+                                    BarcodeScannerOptions.Builder()
+                                        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                                        .build()
+                                )
+                            }.getOrNull()
+                        }
+                        var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
+                        DisposableEffect(Unit) {
+                            onDispose {
+                                runCatching { cameraProviderRef?.unbindAll() }
+                                runCatching { barcodeScanner?.close() }
+                                analysisExecutor.shutdown()
+                            }
+                        }
+
                         Box(modifier = Modifier.weight(1f)) {
                             AndroidView(
                                 factory = { ctx ->
@@ -149,7 +151,7 @@ fun ScanContactScreen(
                                             .build()
 
                                         imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                                            if (viewModel.state.value !is ScanContactState.Scanning) {
+                                            if (viewModel.state.value !is ScanContactState.Scanning || barcodeScanner == null) {
                                                 imageProxy.close()
                                                 return@setAnalyzer
                                             }
