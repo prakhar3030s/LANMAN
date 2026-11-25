@@ -1,0 +1,83 @@
+package com.prakhar.lanman.data.repository
+
+import com.prakhar.lanman.data.local.dao.MessageDao
+import com.prakhar.lanman.domain.model.Message
+import com.prakhar.lanman.domain.model.MessageStatus
+import com.prakhar.lanman.domain.repository.MessageRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class MessageRepositoryImpl @Inject constructor(
+    private val messageDao: MessageDao
+) : MessageRepository {
+
+    override suspend fun getMessageById(id: String): Message? {
+        return messageDao.getMessageById(id)?.toDomain()
+    }
+
+    override fun getMessagesForContact(contactId: String): Flow<List<Message>> {
+        return messageDao.getMessagesForContact(contactId).map { list -> list.map { it.toDomain() } }
+    }
+
+    override suspend fun getPendingMessagesForContact(contactId: String, status: MessageStatus): List<Message> {
+        return messageDao.getPendingMessagesForContact(contactId, status).map { it.toDomain() }
+    }
+
+    override suspend fun getUnacknowledgedMessagesForContact(contactId: String): List<Message> {
+        return messageDao.getUnacknowledgedMessagesForContact(
+            contactId,
+            listOf(MessageStatus.PENDING, MessageStatus.SENT)
+        ).map { it.toDomain() }
+    }
+
+    override fun getContactsWithUnacknowledgedMessagesFlow(): Flow<List<String>> {
+        return messageDao.getContactsWithUnacknowledgedMessages(
+            listOf(MessageStatus.PENDING, MessageStatus.SENT)
+        )
+    }
+
+    override suspend fun insertMessage(message: Message) {
+        messageDao.insertMessage(message.toEntity())
+    }
+
+    override suspend fun insertIfNotExists(message: Message): Boolean {
+        return messageDao.insertIfNotExists(message.toEntity())
+    }
+
+    override suspend fun updateMessageStatus(id: String, status: MessageStatus) {
+        messageDao.updateMessageStatus(id, status)
+    }
+
+    override suspend fun updateMessageStatusIfCurrent(
+        id: String,
+        currentStatus: MessageStatus,
+        status: MessageStatus
+    ) {
+        messageDao.updateMessageStatusIfCurrent(id, currentStatus, status)
+    }
+
+    override fun getLastMessageForContact(contactId: String): Flow<Message?> {
+        return messageDao.getLastMessageForContact(contactId).map { it?.toDomain() }
+    }
+
+    override suspend fun markConversationRead(contactId: String) {
+        messageDao.markIncomingAsRead(contactId)
+    }
+
+    override suspend fun getUnreadDeliveredIncomingIds(contactId: String): List<String> {
+        return messageDao.getUnreadDeliveredIncomingIds(contactId)
+    }
+
+    override suspend fun deleteConversation(contactId: String) {
+        messageDao.deleteMessagesForContact(contactId)
+    }
+
+    override fun getMessageCount(contactId: String): Flow<Int> =
+        messageDao.countMessagesForContact(contactId)
+
+    override fun getAttachmentCount(contactId: String): Flow<Int> =
+        messageDao.countAttachmentsForContact(contactId)
+}
