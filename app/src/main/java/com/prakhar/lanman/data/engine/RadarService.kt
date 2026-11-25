@@ -104,6 +104,6 @@ class RadarService : Service() {
     companion object {
         const val CHANNEL_ID = "channel_radar"
         const val NOTIFICATION_ID = 4747
-        const val ACTION_STOP = "com.example.lanman.ACTION_STOP_RADAR"
+        const val ACTION_STOP = "com.prakhar.lanman.ACTION_STOP_RADAR"
     }
 }

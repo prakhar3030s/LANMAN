@@ -16,11 +16,11 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.example.lanman"
+    namespace = "com.prakhar.lanman"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.lanman"
+        applicationId = "com.prakhar.lanman"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
