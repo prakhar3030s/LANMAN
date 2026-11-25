@@ -2,6 +2,7 @@ package com.example.lanman.domain.usecase
 
 import android.content.Context
 import android.net.Uri
+import com.example.lanman.data.security.SecureKeyStore
 import com.example.lanman.domain.model.FileTransfer
 import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
@@ -22,7 +23,8 @@ import javax.inject.Inject
 class SendVoiceMessageUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
     private val messageRepository: MessageRepository,
-    private val fileTransferRepository: FileTransferRepository
+    private val fileTransferRepository: FileTransferRepository,
+    private val secureKeyStore: SecureKeyStore
 ) {
     suspend operator fun invoke(contactId: String, fileUri: Uri, durationMs: Long) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -46,23 +48,16 @@ class SendVoiceMessageUseCase @Inject constructor(
             }
         } catch (e: Exception) {
             audioFile.delete()
+            deleteTemporaryCacheFile(fileUri)
             throw e
         }
         if (audioFile.length() <= 0L) {
             audioFile.delete()
+            deleteTemporaryCacheFile(fileUri)
             throw IOException("The recorded audio is empty")
         }
         // Drop the recorder's temporary copy now that the durable one exists.
-        val sourcePath = fileUri.path
-        if (sourcePath != null && sourcePath.startsWith(context.cacheDir.absolutePath)) {
-            File(sourcePath).delete()
-        } else {
-            // FileProvider content:// URIs only expose the file name, not the real path.
-            val cachedName = fileUri.lastPathSegment
-            if (!cachedName.isNullOrBlank() && cachedName.endsWith(".m4a") && File(cachedName).name == cachedName) {
-                File(File(context.cacheDir, "voice_recordings"), cachedName).delete()
-            }
-        }
+        deleteTemporaryCacheFile(fileUri)
 
         val fileSize = audioFile.length()
         val mimeType = "audio/lanman-voice;duration=$durationMs"
@@ -74,15 +69,8 @@ class SendVoiceMessageUseCase @Inject constructor(
         secureRandom.nextBytes(aesKey)
         secureRandom.nextBytes(baseNonce)
 
-        // Save tiny 44-byte key material
-        val keysDir = File(context.filesDir, "transfer_keys")
-        if (!keysDir.exists()) keysDir.mkdirs()
-
-        val keyFile = File(keysDir, fileTransferId)
-        FileOutputStream(keyFile).use { out ->
-            out.write(aesKey)
-            out.write(baseNonce)
-        }
+        // Save key material encrypted in Keystore-backed SecureKeyStore
+        secureKeyStore.saveTransferKey(fileTransferId, aesKey + baseNonce)
 
         // Create Message and FileTransfer in DB pointing to the durable copy
         val messageId = UUID.randomUUID().toString()
@@ -109,5 +97,17 @@ class SendVoiceMessageUseCase @Inject constructor(
 
         messageRepository.insertMessage(message)
         fileTransferRepository.insertFileTransfer(fileTransfer)
+    }
+
+    private fun deleteTemporaryCacheFile(fileUri: Uri) {
+        val sourcePath = fileUri.path
+        if (sourcePath != null && sourcePath.startsWith(context.cacheDir.absolutePath)) {
+            runCatching { File(sourcePath).delete() }
+        } else {
+            val cachedName = fileUri.lastPathSegment
+            if (!cachedName.isNullOrBlank() && cachedName.endsWith(".m4a") && File(cachedName).name == cachedName) {
+                runCatching { File(File(context.cacheDir, "voice_recordings"), cachedName).delete() }
+            }
+        }
     }
 }

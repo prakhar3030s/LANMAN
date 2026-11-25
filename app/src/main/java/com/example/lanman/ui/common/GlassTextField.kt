@@ -1,5 +1,6 @@
 package com.example.lanman.ui.common
 
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,7 +10,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,9 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
 @Composable
 fun GlassTextField(
@@ -34,13 +32,17 @@ fun GlassTextField(
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
     singleLine: Boolean = true,
-    leadingIcon: ImageVector? = null
+    maxLines: Int = if (singleLine) 1 else 4,
+    leadingIcon: ImageVector? = null,
+    trailingContent: @Composable (() -> Unit)? = null
 ) {
+    val colors = LanmanTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
 
     GlassSurface(
         modifier = modifier.heightIn(min = 48.dp),
         shape = RoundedCornerShape(12.dp),
+        tint = colors.surfaceGlass,
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
@@ -51,7 +53,7 @@ fun GlassTextField(
                 Icon(
                     imageVector = leadingIcon,
                     contentDescription = null,
-                    tint = TextSecondary,
+                    tint = colors.textSecondary,
                     modifier = Modifier.padding(start = 14.dp)
                 )
             }
@@ -62,11 +64,12 @@ fun GlassTextField(
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = 16.dp, vertical = 14.dp),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = TextPrimary),
-                cursorBrush = SolidColor(ElectricCyan),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.accent),
                 keyboardOptions = keyboardOptions,
                 keyboardActions = keyboardActions,
                 singleLine = singleLine,
+                maxLines = maxLines,
                 enabled = enabled,
                 interactionSource = interactionSource,
                 decorationBox = { innerTextField ->
@@ -75,13 +78,15 @@ fun GlassTextField(
                             Text(
                                 text = placeholder,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = TextSecondary
+                                color = colors.textSecondary
                             )
                         }
                         innerTextField()
                     }
                 }
             )
+
+            trailingContent?.invoke()
         }
     }
 }

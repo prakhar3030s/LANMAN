@@ -12,6 +12,9 @@ interface MessageRequestDao {
     @Query("SELECT * FROM message_requests ORDER BY timestamp DESC")
     fun getAllMessageRequests(): Flow<List<MessageRequestEntity>>
 
+    @Query("SELECT * FROM message_requests WHERE contactId = :contactId LIMIT 1")
+    fun getRequestByContactIdSync(contactId: String): MessageRequestEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessageRequest(request: MessageRequestEntity)
 

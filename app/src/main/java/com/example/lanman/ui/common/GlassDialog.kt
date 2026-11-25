@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,19 +20,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
-private val DialogGlass = Color(0xFF0D1418).copy(alpha = 0.97f)
-
-/**
- * The app-wide dialog surface. Material's AlertDialog used `surfaceVariant`, which read as a
- * different app; this keeps the glass tint and border every other surface uses.
- */
 @Composable
 fun GlassDialog(
     onDismissRequest: () -> Unit,
@@ -39,31 +32,32 @@ fun GlassDialog(
     confirmLabel: String,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
-    dismissLabel: String = "Cancel",
+    dismissLabel: String? = "Cancel",
     onDismiss: (() -> Unit)? = null,
     confirmEnabled: Boolean = true,
     destructive: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors = LanmanTheme.colors
     Dialog(onDismissRequest = onDismissRequest) {
         GlassSurface(
             modifier = modifier
                 .widthIn(max = 380.dp)
                 .fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
-            tint = DialogGlass
+            tint = colors.dialogSurface
         ) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = TextPrimary
+                    color = colors.textPrimary
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 360.dp)
+                        .heightIn(max = 380.dp)
                         .verticalScroll(rememberScrollState()),
                     content = content
                 )
@@ -73,19 +67,22 @@ fun GlassDialog(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(onClick = {
-                        onDismiss?.invoke()
-                        onDismissRequest()
-                    }) {
-                        Text(dismissLabel, color = TextSecondary)
+                    if (!dismissLabel.isNullOrEmpty()) {
+                        TextButton(onClick = {
+                            onDismiss?.invoke()
+                            onDismissRequest()
+                        }) {
+                            Text(dismissLabel, color = colors.textSecondary)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Spacer(modifier = Modifier.padding(horizontal = 4.dp))
                     GlassButton(
                         text = confirmLabel,
                         onClick = onConfirm,
                         isPrimary = !destructive,
+                        destructive = destructive,
                         enabled = confirmEnabled,
-                        modifier = Modifier.widthIn(min = 120.dp)
+                        modifier = Modifier.widthIn(min = 112.dp)
                     )
                 }
             }
@@ -93,12 +90,11 @@ fun GlassDialog(
     }
 }
 
-/** Standard body copy inside [GlassDialog]. */
 @Composable
 fun GlassDialogText(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,
-        color = TextSecondary
+        color = LanmanTheme.colors.textSecondary
     )
 }

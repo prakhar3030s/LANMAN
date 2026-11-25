@@ -2,8 +2,11 @@
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.lanman.data.notification.AppThemeMode
+import com.example.lanman.data.notification.NotificationPreferences
 import com.example.lanman.domain.repository.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,22 +21,27 @@ sealed class StartupState {
 
 @HiltViewModel
 class StartupViewModel @Inject constructor(
-    private val profileRepository: ProfileRepository
+    private val profileRepository: ProfileRepository,
+    private val notificationPreferences: NotificationPreferences
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<StartupState>(StartupState.Loading)
     val state: StateFlow<StartupState> = _state.asStateFlow()
+
+    val themeMode: StateFlow<AppThemeMode> = notificationPreferences.themeModeFlow
+    val isDiscoveryEnabled: Boolean
+        get() = notificationPreferences.discoveryEnabled
 
     init {
         checkStartupState()
     }
 
     private fun checkStartupState() {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            if (profileRepository.hasProfile()) {
-                _state.value = StartupState.Ready
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.value = if (profileRepository.hasProfile()) {
+                StartupState.Ready
             } else {
-                _state.value = StartupState.NeedsOnboarding
+                StartupState.NeedsOnboarding
             }
         }
     }

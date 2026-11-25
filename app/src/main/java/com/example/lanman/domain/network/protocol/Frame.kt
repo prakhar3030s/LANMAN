@@ -12,10 +12,13 @@ enum class FrameType(val typeByte: Byte) {
     FILE_COMPLETE(8),
     KEY_BUNDLE_REQUEST(9),
     KEY_BUNDLE_RESPONSE(10),
+    AUTH_CHALLENGE(11),
+    AUTH_RESPONSE(12),
+    AUTH_RESULT(13),
+    FILE_HASH(14),
     UNKNOWN(-1);
 
     companion object {
-        // Return null ONLY for truly invalid situations (e.g., EOF issues), otherwise use UNKNOWN for forward compatibility
         fun fromByte(byte: Byte): FrameType = entries.find { it.typeByte == byte } ?: UNKNOWN
     }
 }
@@ -26,9 +29,81 @@ sealed class Frame {
     data class HelloFrame(
         val contactId: String,
         val displayName: String,
-        val identityKey: String
+        val identityKey: String,
+        val protocolVersion: Byte = CURRENT_PROTOCOL_VERSION,
+        val clientChallenge: ByteArray = ByteArray(0)
     ) : Frame() {
         override val type = FrameType.HELLO
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as HelloFrame
+            if (contactId != other.contactId) return false
+            if (displayName != other.displayName) return false
+            if (identityKey != other.identityKey) return false
+            if (protocolVersion != other.protocolVersion) return false
+            if (!clientChallenge.contentEquals(other.clientChallenge)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = contactId.hashCode()
+            result = 31 * result + displayName.hashCode()
+            result = 31 * result + identityKey.hashCode()
+            result = 31 * result + protocolVersion
+            result = 31 * result + clientChallenge.contentHashCode()
+            return result
+        }
+
+        companion object {
+            const val LEGACY_PROTOCOL_VERSION: Byte = 1
+            const val CURRENT_PROTOCOL_VERSION: Byte = 2
+        }
+    }
+
+    data class AuthChallengeFrame(
+        val serverChallenge: ByteArray,
+        val serverSignature: ByteArray
+    ) : Frame() {
+        override val type = FrameType.AUTH_CHALLENGE
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as AuthChallengeFrame
+            if (!serverChallenge.contentEquals(other.serverChallenge)) return false
+            if (!serverSignature.contentEquals(other.serverSignature)) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = serverChallenge.contentHashCode()
+            result = 31 * result + serverSignature.contentHashCode()
+            return result
+        }
+    }
+
+    data class AuthResponseFrame(
+        val clientSignature: ByteArray
+    ) : Frame() {
+        override val type = FrameType.AUTH_RESPONSE
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as AuthResponseFrame
+            return clientSignature.contentEquals(other.clientSignature)
+        }
+
+        override fun hashCode(): Int = clientSignature.contentHashCode()
+    }
+
+    data class AuthResultFrame(
+        val accepted: Boolean,
+        val reason: String = ""
+    ) : Frame() {
+        override val type = FrameType.AUTH_RESULT
     }
 
     object PingFrame : Frame() {
@@ -47,19 +122,16 @@ sealed class Frame {
         val content: ByteArray
     ) : Frame() {
         override val type = FrameType.MESSAGE
-        
+
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
-
             other as MessageFrame
-
             if (messageId != other.messageId) return false
             if (senderId != other.senderId) return false
             if (messageType != other.messageType) return false
             if (timestamp != other.timestamp) return false
             if (!content.contentEquals(other.content)) return false
-
             return true
         }
 
@@ -93,7 +165,7 @@ sealed class Frame {
         val senderTimestamp: Long
     ) : Frame() {
         override val type = FrameType.FILE_OFFER
-        
+
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
@@ -130,7 +202,7 @@ sealed class Frame {
         val data: ByteArray
     ) : Frame() {
         override val type = FrameType.FILE_CHUNK
-        
+
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
@@ -155,6 +227,27 @@ sealed class Frame {
         override val type = FrameType.FILE_COMPLETE
     }
 
+    data class FileHashFrame(
+        val fileTransferId: String,
+        val sha256: ByteArray
+    ) : Frame() {
+        override val type = FrameType.FILE_HASH
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as FileHashFrame
+            if (fileTransferId != other.fileTransferId) return false
+            return sha256.contentEquals(other.sha256)
+        }
+
+        override fun hashCode(): Int {
+            var result = fileTransferId.hashCode()
+            result = 31 * result + sha256.contentHashCode()
+            return result
+        }
+    }
+
     data class KeyBundleRequestFrame(
         val contactId: String
     ) : Frame() {
@@ -165,7 +258,7 @@ sealed class Frame {
         val bundle: ByteArray
     ) : Frame() {
         override val type = FrameType.KEY_BUNDLE_RESPONSE
-        
+
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
@@ -174,9 +267,7 @@ sealed class Frame {
             return true
         }
 
-        override fun hashCode(): Int {
-            return bundle.contentHashCode()
-        }
+        override fun hashCode(): Int = bundle.contentHashCode()
     }
 
     data class UnknownFrame(

@@ -3,51 +3,85 @@ package com.example.lanman.ui.chat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.example.lanman.domain.model.FileTransfer
 import com.example.lanman.domain.model.MessageDirection
+import com.example.lanman.domain.model.MessageType
 import com.example.lanman.ui.chat.components.MessageCard
 import com.example.lanman.ui.chat.components.VoiceRecordButton
+import com.example.lanman.ui.chat.components.formatSize
 import com.example.lanman.ui.common.AppIcons
 import com.example.lanman.ui.common.EmptyState
+import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassDialog
 import com.example.lanman.ui.common.GlassDialogText
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.GlassTextField
 import com.example.lanman.ui.common.LanmanTopBar
+import com.example.lanman.ui.common.MediaActions
 import com.example.lanman.ui.common.contentWidth
 import com.example.lanman.ui.common.pressable
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.nio.charset.StandardCharsets
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToContactDetail: (String) -> Unit = {},
     viewModel: ConversationViewModel = hiltViewModel()
 ) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val contactPresence by viewModel.contactPresence.collectAsStateWithLifecycle()
+    val colors = LanmanTheme.colors
 
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -56,30 +90,35 @@ fun ConversationScreen(
     var previousMessageCount by remember { mutableIntStateOf(0) }
     var showAttachMenu by remember { mutableStateOf(false) }
     var actionTarget by remember { mutableStateOf<MessageUiModel?>(null) }
+    var previewImageTransfer by remember { mutableStateOf<FileTransfer?>(null) }
 
-    // Pickers
-    val photoPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             viewModel.sendFile(uri)
         }
     }
 
-    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             viewModel.sendFile(uri)
         }
     }
 
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isResumed by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isResumed = true
                 viewModel.setActive(true)
-            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) {
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                isResumed = false
                 viewModel.setActive(false)
             }
         }
@@ -90,8 +129,6 @@ fun ConversationScreen(
         }
     }
 
-    // Opening a chat must land on the newest message, not the oldest one. The list starts at
-    // index 0, so jump to the end once the thread has loaded.
     var didInitialScroll by remember { mutableStateOf(false) }
     LaunchedEffect(messages.size) {
         if (!didInitialScroll && messages.isNotEmpty()) {
@@ -100,10 +137,10 @@ fun ConversationScreen(
         }
     }
 
-    // Auto-scroll logic: If at bottom and new message arrives, snap to bottom
     LaunchedEffect(messages.size) {
         if (messages.size > previousMessageCount) {
-            val isAtBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == (listState.layoutInfo.totalItemsCount - 1)
+            val isAtBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ==
+                (listState.layoutInfo.totalItemsCount - 1)
             if (isAtBottom || messages.lastOrNull()?.message?.direction == MessageDirection.OUTGOING) {
                 listState.animateScrollToItem(messages.size - 1)
             }
@@ -111,14 +148,22 @@ fun ConversationScreen(
         previousMessageCount = messages.size
     }
 
-    // Read receipts marking logic
+    val messagesState = rememberUpdatedState(messages)
+    val isResumedState = rememberUpdatedState(isResumed)
     LaunchedEffect(listState) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo }.collect { visibleItems ->
-            val visibleMessages = visibleItems.mapNotNull {
-                val index = it.index
-                if (index in messages.indices) messages[index] else null
+        snapshotFlow {
+            if (!isResumedState.value) {
+                emptyList()
+            } else {
+                val snapshot = messagesState.value
+                listState.layoutInfo.visibleItemsInfo.mapNotNull { info ->
+                    snapshot.getOrNull(info.index)
+                }
             }
-            viewModel.onMessagesVisible(visibleMessages)
+        }.collect { visibleMessages ->
+            if (visibleMessages.isNotEmpty()) {
+                viewModel.onMessagesVisible(visibleMessages)
+            }
         }
     }
 
@@ -131,12 +176,17 @@ fun ConversationScreen(
         }
     }
 
+    val showScrollToBottom by remember {
+        derivedStateOf {
+            messages.isNotEmpty() &&
+                (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) < messages.lastIndex - 1
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         modifier = Modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
-        // The bottom is handled below by imePadding, so the keyboard and the composer do not
-        // stack a navigation-bar gap between them.
+        containerColor = colors.background,
         contentWindowInsets = WindowInsets.systemBars.only(
             WindowInsetsSides.Top + WindowInsetsSides.Horizontal
         )
@@ -145,27 +195,63 @@ fun ConversationScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .background(MaterialTheme.colorScheme.background),
+                .background(colors.background),
             contentAlignment = Alignment.TopCenter
         ) {
             Column(
                 modifier = Modifier
                     .contentWidth()
                     .fillMaxHeight()
-                    // The whole screen lifts once when the keyboard opens, so the composer stays
-                    // glued to it instead of the window panning the header off-screen.
+                    .navigationBarsPadding()
                     .imePadding()
             ) {
+                val peerName = contactPresence?.contact?.displayName ?: "Conversation"
+                val isOnline = contactPresence?.isOnline == true
+
                 LanmanTopBar(
-                    title = contactPresence?.contact?.displayName ?: "Conversation",
-                    subtitle = if (contactPresence?.isOnline == true) "Online" else "Offline",
-                    subtitleColor = if (contactPresence?.isOnline == true) ElectricCyan else TextSecondary,
+                    title = peerName,
+                    subtitle = when {
+                        contactPresence == null -> "Contact unavailable"
+                        isOnline -> "Online on Wi-Fi"
+                        else -> "Offline \u00B7 Messages queued locally"
+                    },
+                    subtitleColor = if (isOnline) colors.accent else colors.textSecondary,
                     onBack = onNavigateBack,
                     avatarName = contactPresence?.contact?.displayName,
-                    avatarOnline = contactPresence?.isOnline == true
+                    avatarOnline = isOnline,
+                    onTitleClick = if (contactPresence != null) {
+                        { onNavigateToContactDetail(viewModel.contactId) }
+                    } else null,
+                    actions = {
+                        if (contactPresence != null) {
+                            IconButton(onClick = { onNavigateToContactDetail(viewModel.contactId) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Contact details and safety number",
+                                    tint = colors.textSecondary
+                                )
+                            }
+                        }
+                    }
                 )
 
-                // Messages List
+                if (contactPresence != null && !isOnline) {
+                    GlassSurface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        tint = colors.surfaceGlass
+                    ) {
+                        Text(
+                            text = "$peerName is offline. New messages stay encrypted here and send automatically when nearby on Wi-Fi.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.textSecondary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
                 if (messages.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -176,7 +262,7 @@ fun ConversationScreen(
                         EmptyState(
                             icon = AppIcons.Chat,
                             title = "Start the conversation",
-                            message = "Messages are sent over your local network, end to end encrypted."
+                            message = "Messages are encrypted end-to-end and travel directly over your local Wi-Fi."
                         )
                     }
                 } else {
@@ -189,7 +275,6 @@ fun ConversationScreen(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
-                            // Short threads sit on the composer instead of floating at the top.
                             verticalArrangement = Arrangement.Bottom
                         ) {
                             itemsIndexed(
@@ -214,12 +299,12 @@ fun ConversationScreen(
                                     onCancel = {
                                         viewModel.cancelTransfer(uiModel.message.id, uiModel.fileTransfer?.id)
                                     },
-                                    onLongPress = { actionTarget = uiModel }
+                                    onLongPress = { actionTarget = uiModel },
+                                    onPreviewImage = { transfer -> previewImageTransfer = transfer }
                                 )
                             }
                         }
 
-                        // Floating Sticky Date Header
                         val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
                         val isScrolling = listState.isScrollInProgress
 
@@ -228,37 +313,67 @@ fun ConversationScreen(
                             if (isScrolling) {
                                 showFloatingDate = true
                             } else {
-                                kotlinx.coroutines.delay(1500)
+                                delay(1500)
                                 showFloatingDate = false
                             }
                         }
 
                         androidx.compose.animation.AnimatedVisibility(
                             visible = showFloatingDate,
-                            enter = androidx.compose.animation.fadeIn(),
-                            exit = androidx.compose.animation.fadeOut(),
-                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 8.dp)
                         ) {
                             if (messages.isNotEmpty() && firstVisibleIndex < messages.size) {
                                 val topMessage = messages[firstVisibleIndex].message
                                 DateSeparator(dateStr = formatMessageDate(topMessage.timestamp))
                             }
                         }
+
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = showScrollToBottom,
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(16.dp)
+                        ) {
+                            SmallFloatingActionButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(messages.lastIndex)
+                                    }
+                                },
+                                containerColor = colors.surfaceElevated,
+                                contentColor = colors.accent,
+                                shape = CircleShape
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Jump to newest message"
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Input Area
+                // Composer
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.Bottom
                 ) {
-                    IconButton(onClick = { showAttachMenu = true }) {
+                    IconButton(
+                        onClick = { showAttachMenu = true },
+                        enabled = contactPresence != null
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Add,
                             contentDescription = "Attach a photo or document",
-                            tint = TextPrimary
+                            tint = if (contactPresence != null) colors.textPrimary else colors.textTertiary
                         )
                     }
 
@@ -268,34 +383,39 @@ fun ConversationScreen(
                         value = inputText,
                         onValueChange = { inputText = it },
                         placeholder = "Message...",
+                        singleLine = false,
+                        maxLines = 4,
+                        enabled = contactPresence != null,
                         modifier = Modifier.weight(1f)
                     )
 
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
 
                     if (inputText.isNotBlank()) {
                         IconButton(
                             onClick = {
-                                viewModel.sendMessage(inputText)
-                                inputText = ""
+                                val text = inputText.trim()
+                                if (text.isNotEmpty()) {
+                                    viewModel.sendMessage(text)
+                                    inputText = ""
+                                }
                             },
+                            enabled = contactPresence != null,
                             modifier = Modifier
                                 .size(48.dp)
-                                .background(ElectricCyan.copy(alpha = 0.2f), shape = androidx.compose.foundation.shape.CircleShape)
+                                .background(colors.accentTint, shape = CircleShape)
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Send",
-                                tint = ElectricCyan
+                                tint = colors.accent
                             )
                         }
-                    } else {
+                    } else if (contactPresence != null) {
                         VoiceRecordButton(
                             onRecordComplete = { file, durationMs ->
-                                // The provider throws if the file is outside every configured root,
-                                // so never let that escape from the recording callback.
                                 val uri = runCatching {
-                                    androidx.core.content.FileProvider.getUriForFile(
+                                    FileProvider.getUriForFile(
                                         context,
                                         "${context.packageName}.fileprovider",
                                         file
@@ -309,6 +429,31 @@ fun ConversationScreen(
                                 } else {
                                     viewModel.sendVoiceMessage(uri = uri, durationMs = durationMs)
                                 }
+                            },
+                            onRecordingHint = { hint ->
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(hint)
+                                }
+                            },
+                            onPermissionDenied = { permanentlyDenied ->
+                                coroutineScope.launch {
+                                    if (permanentlyDenied) {
+                                        val res = snackbarHostState.showSnackbar(
+                                            message = "Microphone permission is required for voice messages",
+                                            actionLabel = "Settings",
+                                            duration = SnackbarDuration.Long
+                                        )
+                                        if (res == SnackbarResult.ActionPerformed) {
+                                            val intent = Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.fromParts("package", context.packageName, null)
+                                            )
+                                            context.startActivity(intent)
+                                        }
+                                    } else {
+                                        snackbarHostState.showSnackbar("Microphone permission is needed to record voice notes")
+                                    }
+                                }
                             }
                         )
                     }
@@ -320,13 +465,13 @@ fun ConversationScreen(
     if (showAttachMenu) {
         ModalBottomSheet(
             onDismissRequest = { showAttachMenu = false },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            containerColor = colors.surfaceElevated
         ) {
             Column(modifier = Modifier.padding(bottom = 24.dp)) {
                 Text(
                     text = "Attach",
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = TextPrimary,
+                    color = colors.textPrimary,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                 )
                 SheetAction(
@@ -335,9 +480,7 @@ fun ConversationScreen(
                     onClick = {
                         showAttachMenu = false
                         photoPickerLauncher.launch(
-                            androidx.activity.result.PickVisualMediaRequest(
-                                androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo
-                            )
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                         )
                     }
                 )
@@ -354,42 +497,121 @@ fun ConversationScreen(
     }
 
     actionTarget?.let { target ->
-        val isText = target.message.type == com.example.lanman.domain.model.MessageType.TEXT
+        val isText = target.message.type == MessageType.TEXT
         GlassDialog(
             onDismissRequest = { actionTarget = null },
             title = if (isText) "Message" else "Attachment",
-            confirmLabel = "Close",
-            onConfirm = { actionTarget = null },
-            dismissLabel = "Cancel"
+            confirmLabel = if (isText) "Copy text" else "Got it",
+            onConfirm = {
+                if (isText) {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Message",
+                            String(target.message.content, StandardCharsets.UTF_8)
+                        )
+                    )
+                    Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
+                }
+                actionTarget = null
+            },
+            dismissLabel = if (isText) "Cancel" else null
         ) {
             if (isText) {
                 GlassDialogText("Copy the text of this message to the clipboard?")
             } else {
-                GlassDialogText("Use the bubble actions to open, share or save this attachment.")
+                GlassDialogText("Long-press completed attachments to open, share, or save them.")
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            if (isText) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pressable {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(
-                                ClipData.newPlainText(
-                                    "Message",
-                                    String(target.message.content, StandardCharsets.UTF_8)
-                                )
-                            )
-                            android.widget.Toast.makeText(context, "Message copied", android.widget.Toast.LENGTH_SHORT).show()
-                            actionTarget = null
-                        }
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(AppIcons.ContentCopy, contentDescription = null, tint = ElectricCyan)
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text("Copy text", color = TextPrimary, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+
+    previewImageTransfer?.let { transfer ->
+        val model: Any = if (transfer.localUri.startsWith("content://")) {
+            Uri.parse(transfer.localUri)
+        } else {
+            File(transfer.localUri)
+        }
+        BackHandler { previewImageTransfer = null }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.96f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {}
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            AsyncImage(
+                model = model,
+                contentDescription = transfer.fileName,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 64.dp),
+                contentScale = ContentScale.Fit
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { previewImageTransfer = null }) {
+                    Icon(Icons.Default.Close, contentDescription = "Close preview", tint = Color.White)
                 }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = transfer.fileName,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = formatSize(transfer.fileSizeBytes),
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GlassButton(
+                    text = "Share",
+                    onClick = {
+                        if (!MediaActions.shareFile(context, transfer.localUri, transfer.mimeType)) {
+                            Toast.makeText(context, "Could not share this image", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                GlassButton(
+                    text = "Save",
+                    onClick = {
+                        val saved = MediaActions.saveToDownloads(
+                            context,
+                            transfer.localUri,
+                            transfer.fileName,
+                            transfer.mimeType
+                        )
+                        Toast.makeText(
+                            context,
+                            if (saved) "Saved to Downloads/LANMAN" else "Could not save this image",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    isPrimary = true,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }
@@ -401,6 +623,7 @@ private fun SheetAction(
     label: String,
     onClick: () -> Unit
 ) {
+    val colors = LanmanTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -408,40 +631,46 @@ private fun SheetAction(
             .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = ElectricCyan)
+        Icon(imageVector = icon, contentDescription = null, tint = colors.accent)
         Spacer(modifier = Modifier.width(20.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = colors.textPrimary)
     }
 }
 
 @Composable
 fun DateSeparator(dateStr: String) {
+    val colors = LanmanTheme.colors
     Box(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        GlassSurface(shape = RoundedCornerShape(12.dp)) {
+        GlassSurface(
+            shape = RoundedCornerShape(12.dp),
+            tint = colors.surfaceCard
+        ) {
             Text(
                 text = dateStr,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 style = MaterialTheme.typography.labelMedium,
-                color = TextPrimary
+                color = colors.textSecondary
             )
         }
     }
 }
 
 fun formatMessageDate(timestamp: Long): String {
-    val messageDate = java.time.Instant.ofEpochMilli(timestamp)
-        .atZone(java.time.ZoneId.systemDefault())
+    val messageDate = Instant.ofEpochMilli(timestamp)
+        .atZone(ZoneId.systemDefault())
         .toLocalDate()
-    val today = java.time.LocalDate.now()
+    val today = LocalDate.now()
 
     return when {
         messageDate == today -> "Today"
         messageDate == today.minusDays(1) -> "Yesterday"
         else -> {
-            val formatter = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy")
+            val formatter = DateTimeFormatter.ofPattern("dd MMM yyyy")
             messageDate.format(formatter)
         }
     }

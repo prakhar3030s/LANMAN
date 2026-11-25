@@ -153,6 +153,18 @@ class SecureKeyStore @Inject constructor(
         return prefs.contains("kyber_prekey_$preKeyId")
     }
 
+    fun saveTransferKey(transferId: String, keyAndNonce: ByteArray) {
+        saveBytes("transfer_key_$transferId", keyAndNonce)
+    }
+
+    fun getTransferKey(transferId: String): ByteArray? {
+        return getBytes("transfer_key_$transferId")
+    }
+
+    fun removeTransferKey(transferId: String) {
+        prefs.edit().remove("transfer_key_$transferId").apply()
+    }
+
     private fun getBytes(key: String): ByteArray? {
         val base64 = prefs.getString(key, null) ?: return null
         return Base64.decode(base64, Base64.DEFAULT)

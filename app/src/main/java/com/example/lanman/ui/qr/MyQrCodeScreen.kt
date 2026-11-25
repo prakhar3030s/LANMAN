@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -16,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -26,6 +28,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,20 +40,19 @@ import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.MediaActions
 import com.example.lanman.ui.common.contentWidth
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
 @Composable
 fun MyQrCodeScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToScanner: () -> Unit = {},
     viewModel: MyQrCodeViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val colors = LanmanTheme.colors
 
-    // A pairing code is meant to be scanned by another phone, so hold the screen awake at full
-    // brightness while it is on screen and restore the user's setting afterwards.
+    // Keep screen awake at full brightness while showing a pairing QR code, restoring afterwards.
     val view = LocalView.current
     DisposableEffect(Unit) {
         val window = context.findActivity()?.window
@@ -74,7 +76,7 @@ fun MyQrCodeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
         LanmanTopBar(
             title = "My QR Code",
@@ -93,14 +95,14 @@ fun MyQrCodeScreen(
                 when (val currentState = state) {
                     is MyQrCodeState.Loading -> {
                         Spacer(modifier = Modifier.height(64.dp))
-                        CircularProgressIndicator(color = ElectricCyan)
+                        CircularProgressIndicator(color = colors.accent)
                     }
 
                     is MyQrCodeState.Error -> {
                         Spacer(modifier = Modifier.height(64.dp))
                         Text(
                             text = "Failed to load profile or generate QR code.",
-                            color = MaterialTheme.colorScheme.error,
+                            color = colors.error,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -108,7 +110,6 @@ fun MyQrCodeScreen(
                     is MyQrCodeState.Generated -> {
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // Whose code this is, so a handed-over phone is unambiguous.
                         ContactAvatar(
                             displayName = currentState.displayName,
                             size = 64.dp
@@ -119,16 +120,16 @@ fun MyQrCodeScreen(
                         Text(
                             text = currentState.displayName.ifBlank { "Your code" },
                             style = MaterialTheme.typography.titleLarge,
-                            color = TextPrimary,
+                            color = colors.textPrimary,
                             textAlign = TextAlign.Center
                         )
 
                         Spacer(modifier = Modifier.height(4.dp))
 
                         Text(
-                            text = "Have your contact scan this to pair",
+                            text = "Have your contact scan this to pair on local Wi-Fi",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary,
+                            color = colors.textSecondary,
                             textAlign = TextAlign.Center
                         )
 
@@ -136,10 +137,10 @@ fun MyQrCodeScreen(
 
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(0.86f)
+                                .fillMaxWidth(0.84f)
                                 .aspectRatio(1f)
-                                .background(Color.White, RoundedCornerShape(12.dp))
-                                .padding(12.dp),
+                                .background(Color.White, RoundedCornerShape(16.dp))
+                                .padding(14.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Image(
@@ -149,15 +150,55 @@ fun MyQrCodeScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        if (!currentState.fingerprint.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            GlassSurface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "IDENTITY VERIFICATION CODE",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = colors.accent
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    SelectionContainer {
+                                        Text(
+                                            text = currentState.fingerprint,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            color = colors.textPrimary,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Your peer can confirm this matches what they scan",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colors.textSecondary,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
 
                         Text(
-                            text = "Or copy manual code:",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary
+                            text = "Manual pairing code",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.textSecondary
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         GlassSurface(
                             modifier = Modifier.fillMaxWidth(),
@@ -172,17 +213,16 @@ fun MyQrCodeScreen(
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFamily = FontFamily.Monospace
                                     ),
-                                    color = TextPrimary,
+                                    color = colors.textSecondary,
                                     textAlign = TextAlign.Center,
-                                    maxLines = 4,
+                                    maxLines = 3,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                        // Equal widths: the two actions carry the same weight.
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -218,7 +258,29 @@ fun MyQrCodeScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(32.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            TextButton(onClick = {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, currentState.payloadString)
+                                }
+                                runCatching {
+                                    context.startActivity(Intent.createChooser(sendIntent, "Share pairing code"))
+                                }
+                            }) {
+                                Text("Share code", color = colors.textSecondary)
+                            }
+                            TextButton(onClick = onNavigateToScanner) {
+                                Text("Scan peer's QR", color = colors.accent)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
                     }
                 }
             }

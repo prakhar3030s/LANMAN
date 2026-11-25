@@ -10,7 +10,9 @@ import com.example.lanman.domain.network.protocol.Frame
 import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.repository.ProfileRepository
 import com.example.lanman.domain.security.EncryptionEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withContext
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import javax.inject.Inject
@@ -24,11 +26,11 @@ class SendMessageUseCase @Inject constructor(
     private val TAG = "SendMessageUseCase"
     private val lastSendTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    suspend operator fun invoke(contactId: String, text: String) {
+    suspend operator fun invoke(contactId: String, text: String) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val lastSend = lastSendTimes[contactId] ?: 0L
         if (now - lastSend < 300) {
-            return // Debounce rapid double-taps
+            return@withContext // Debounce rapid double-taps
         }
         lastSendTimes[contactId] = now
         

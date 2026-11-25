@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.lanman.ui.theme.ElectricCyan
+import com.example.lanman.ui.theme.LanmanTheme
 import com.example.lanman.ui.theme.White
 
 private val MonogramGradients = listOf(
@@ -51,13 +51,14 @@ fun ContactAvatar(
     val initial = displayName.trim().take(1).uppercase().ifBlank { "?" }
     val ringWidth = if (size >= 40.dp) 2.dp else 1.5.dp
 
+    val colors = LanmanTheme.colors
     Box(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
             .background(Brush.linearGradient(gradient))
             .then(
-                if (showRing && isOnline) Modifier.border(ringWidth, ElectricCyan, CircleShape) else Modifier
+                if (showRing && isOnline) Modifier.border(ringWidth, colors.accent, CircleShape) else Modifier
             ),
         contentAlignment = Alignment.Center
     ) {
@@ -75,11 +76,12 @@ fun ContactAvatar(
 /** Small presence dot for places that keep the avatar ring subtle. */
 @Composable
 fun PresenceDot(isOnline: Boolean, modifier: Modifier = Modifier, size: Dp = 10.dp) {
+    val colors = LanmanTheme.colors
     Box(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
             .padding(0.dp)
-            .background(if (isOnline) ElectricCyan else White.copy(alpha = 0.25f))
+            .background(if (isOnline) colors.accent else colors.textTertiary)
     )
 }

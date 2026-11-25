@@ -22,14 +22,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
-/**
- * One empty state for Chats, Contacts, Requests and a conversation without messages:
- * icon, short title, one explanatory line and an optional call to action.
- */
 @Composable
 fun EmptyState(
     icon: ImageVector,
@@ -39,6 +33,7 @@ fun EmptyState(
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
+    val colors = LanmanTheme.colors
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -50,13 +45,13 @@ fun EmptyState(
             modifier = Modifier
                 .size(72.dp)
                 .clip(CircleShape)
-                .background(ElectricCyan.copy(alpha = 0.10f)),
+                .background(colors.accentTint),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = ElectricCyan,
+                tint = colors.accent,
                 modifier = Modifier.size(32.dp)
             )
         }
@@ -64,14 +59,14 @@ fun EmptyState(
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-            color = TextPrimary,
+            color = colors.textPrimary,
             textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = message,
             style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary,
+            color = colors.textSecondary,
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 320.dp)
         )

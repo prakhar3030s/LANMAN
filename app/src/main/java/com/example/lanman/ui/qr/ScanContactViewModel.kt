@@ -8,12 +8,19 @@ import com.example.lanman.domain.qr.QrPayloadCodec
 import com.example.lanman.domain.repository.ContactRepository
 import com.example.lanman.domain.repository.MessageRequestRepository
 import com.example.lanman.domain.repository.ProfileRepository
+import com.example.lanman.domain.security.EncryptionEngine
+import com.example.lanman.domain.security.PeerAuth
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import java.util.Base64
 import javax.inject.Inject
 
 sealed class ScanContactState {
@@ -21,7 +28,9 @@ sealed class ScanContactState {
     data class Validating(val code: String) : ScanContactState()
     data class ConfirmationRequired(
         val payload: ContactQrPayload,
-        val isUpdate: Boolean
+        val isUpdate: Boolean,
+        val fingerprint: String? = null,
+        val identityKeyChanged: Boolean = false
     ) : ScanContactState()
     data class Error(val message: String) : ScanContactState()
     object Success : ScanContactState()
@@ -31,7 +40,8 @@ sealed class ScanContactState {
 class ScanContactViewModel @Inject constructor(
     private val profileRepository: ProfileRepository,
     private val contactRepository: ContactRepository,
-    private val messageRequestRepository: MessageRequestRepository
+    private val messageRequestRepository: MessageRequestRepository,
+    private val encryptionEngine: EncryptionEngine
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ScanContactState>(ScanContactState.Scanning)
@@ -39,14 +49,14 @@ class ScanContactViewModel @Inject constructor(
 
     fun onCodeScannedOrEntered(code: String) {
         if (_state.value !is ScanContactState.Scanning && _state.value !is ScanContactState.Error) {
-            return // Prevent duplicate processing
+            return
         }
-        
+
         _state.value = ScanContactState.Validating(code)
 
         viewModelScope.launch {
-            val payload = QrPayloadCodec.decode(code)
-            if (payload == null) {
+            val payload = QrPayloadCodec.decode(code.trim())
+            if (payload == null || payload.id.isBlank() || payload.displayName.isBlank()) {
                 _state.value = ScanContactState.Error("Invalid QR code format.")
                 return@launch
             }
@@ -57,55 +67,54 @@ class ScanContactViewModel @Inject constructor(
                 return@launch
             }
 
-            val existingContact = contactRepository.getContactById(payload.id).firstOrNull()
-            val isUpdate = existingContact != null
+            val decodedBundle = withContext(Dispatchers.Default) { decodeBundleBytes(payload) }
+            val newIdentityKey = PeerAuth.extractIdentityKeyBase64(decodedBundle)
+            if (PeerAuth.parseIdentityKey(newIdentityKey) == null) {
+                _state.value = ScanContactState.Error("Incomplete QR code — missing valid encryption keys.")
+                return@launch
+            }
 
-            _state.value = ScanContactState.ConfirmationRequired(payload, isUpdate)
+            val existingContact = contactRepository.getContactById(payload.id).firstOrNull()
+            val existingIdentityKey = PeerAuth.extractIdentityKeyBase64(existingContact?.publicKeyBundle)
+            val isUpdate = existingContact != null
+            val keyChanged = isUpdate && existingIdentityKey != null && existingIdentityKey != newIdentityKey
+            val fingerprint = PeerAuth.keyFingerprint(newIdentityKey)
+
+            _state.value = ScanContactState.ConfirmationRequired(
+                payload = payload,
+                isUpdate = isUpdate,
+                fingerprint = fingerprint,
+                identityKeyChanged = keyChanged
+            )
         }
     }
 
     fun confirmAddContact(payload: ContactQrPayload) {
         viewModelScope.launch {
             try {
-                if (payload.fullBundleBase64 == null && payload.identityKey == null) {
-                    _state.value = ScanContactState.Error("Incomplete QR code — missing encryption keys")
+                val publicKeyBundleBytes = withContext(Dispatchers.Default) { decodeBundleBytes(payload) }
+                if (publicKeyBundleBytes == null) {
+                    _state.value = ScanContactState.Error("Incomplete QR code — missing encryption keys.")
                     return@launch
                 }
-                
-                val publicKeyBundleBytes = if (payload.fullBundleBase64 != null) {
-                    val gzippedBytes = android.util.Base64.decode(payload.fullBundleBase64, android.util.Base64.NO_WRAP)
-                    try {
-                        val bis = java.io.ByteArrayInputStream(gzippedBytes)
-                        val out = java.io.ByteArrayOutputStream()
-                        java.util.zip.GZIPInputStream(bis).use { it.copyTo(out) }
-                        out.toByteArray()
-                    } catch (e: Exception) {
-                        // Fallback in case it wasn't gzipped (e.g. older testing version)
-                        gzippedBytes
-                    }
-                } else if (payload.identityKey != null) {
-                    // Fallback for v3 QR codes
-                    val json = org.json.JSONObject().apply {
-                        put("identityKey", payload.identityKey)
-                    }
-                    json.toString().toByteArray(Charsets.UTF_8)
-                } else {
-                    null
-                }
 
-                val contact = Contact(
-                    id = payload.id,
-                    displayName = payload.displayName,
-                    publicKeyBundle = publicKeyBundleBytes,
-                    lastKnownIp = null,
-                    lastSeenAt = null,
-                    addedAt = System.currentTimeMillis()
-                )
-                contactRepository.upsertContact(contact)
-                // Pairing settles who this device is, so a request left by its earlier messages
-                // would only block the chat now that the contact exists. The sender retries
-                // those messages and they land in the conversation.
-                messageRequestRepository.deleteMessageRequest(payload.id)
+                withContext(Dispatchers.IO) {
+                    val existing = contactRepository.getContactById(payload.id).firstOrNull()
+                    val contact = Contact(
+                        id = payload.id,
+                        displayName = payload.displayName.trim(),
+                        publicKeyBundle = publicKeyBundleBytes,
+                        lastKnownIp = existing?.lastKnownIp,
+                        lastSeenAt = existing?.lastSeenAt,
+                        addedAt = existing?.addedAt ?: System.currentTimeMillis()
+                    )
+                    contactRepository.upsertContact(contact)
+                    if (existing != null) {
+                        // Reset ratchet session when updating a contact's key bundle so new messages re-handshake.
+                        encryptionEngine.deleteSession(payload.id)
+                    }
+                    messageRequestRepository.deleteMessageRequest(payload.id)
+                }
                 _state.value = ScanContactState.Success
             } catch (e: Exception) {
                 _state.value = ScanContactState.Error("Failed to save contact.")
@@ -115,5 +124,29 @@ class ScanContactViewModel @Inject constructor(
 
     fun resetToScanning() {
         _state.value = ScanContactState.Scanning
+    }
+
+    private fun decodeBundleBytes(payload: ContactQrPayload): ByteArray? {
+        return if (payload.fullBundleBase64 != null) {
+            val gzippedBytes = try {
+                Base64.getDecoder().decode(payload.fullBundleBase64.trim())
+            } catch (_: Exception) {
+                return null
+            }
+            try {
+                val bis = java.io.ByteArrayInputStream(gzippedBytes)
+                val out = java.io.ByteArrayOutputStream()
+                java.util.zip.GZIPInputStream(bis).use { it.copyTo(out) }
+                out.toByteArray()
+            } catch (_: Exception) {
+                gzippedBytes
+            }
+        } else if (payload.identityKey != null) {
+            buildJsonObject {
+                put("identityKey", payload.identityKey)
+            }.toString().toByteArray(Charsets.UTF_8)
+        } else {
+            null
+        }
     }
 }

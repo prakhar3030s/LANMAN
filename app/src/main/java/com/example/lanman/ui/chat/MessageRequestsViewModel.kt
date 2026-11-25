@@ -20,7 +20,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import org.json.JSONObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 
 @HiltViewModel
@@ -48,10 +49,9 @@ class MessageRequestsViewModel @Inject constructor(
                 // A request only carries the sender's identity key. Store it as a partial bundle:
                 // the key-bundle exchange fills in registration id and prekeys afterwards, and
                 // SessionManager can only build a session from a complete bundle.
-                val bundleBytes = JSONObject()
-                    .put("identityKey", request.identityKey)
-                    .toString()
-                    .toByteArray(Charsets.UTF_8)
+                val bundleBytes = buildJsonObject {
+                    put("identityKey", request.identityKey)
+                }.toString().toByteArray(Charsets.UTF_8)
 
                 contactRepository.upsertContact(
                     Contact(

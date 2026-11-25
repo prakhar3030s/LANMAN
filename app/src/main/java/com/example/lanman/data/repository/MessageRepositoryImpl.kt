@@ -67,6 +67,10 @@ class MessageRepositoryImpl @Inject constructor(
         messageDao.markIncomingAsRead(contactId)
     }
 
+    override suspend fun getUnreadDeliveredIncomingIds(contactId: String): List<String> {
+        return messageDao.getUnreadDeliveredIncomingIds(contactId)
+    }
+
     override suspend fun deleteConversation(contactId: String) {
         messageDao.deleteMessagesForContact(contactId)
     }

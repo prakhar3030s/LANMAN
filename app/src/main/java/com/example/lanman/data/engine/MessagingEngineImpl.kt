@@ -7,12 +7,16 @@ import com.example.lanman.data.network.IncomingMessageReceiver
 import com.example.lanman.data.network.MessageDispatcher
 import com.example.lanman.domain.engine.MessagingEngine
 import com.example.lanman.domain.network.ConnectionManager
+import com.example.lanman.domain.network.NetworkDiscoveryManager
 import com.example.lanman.domain.network.PresenceTracker
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,6 +26,7 @@ class MessagingEngineImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val connectionManager: ConnectionManager,
     private val presenceTracker: PresenceTracker,
+    private val networkDiscoveryManager: NetworkDiscoveryManager,
     private val messageDispatcher: MessageDispatcher,
     private val incomingMessageReceiver: IncomingMessageReceiver,
     private val fileTransferReceiver: FileTransferReceiver
@@ -29,7 +34,9 @@ class MessagingEngineImpl @Inject constructor(
 
     private val TAG = "MessagingEngine"
     private var scope: CoroutineScope? = null
-    private val lastConnectionAttempts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private val _isRunning = MutableStateFlow(false)
+    override val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
     @Synchronized
     override fun start() {
@@ -37,34 +44,35 @@ class MessagingEngineImpl @Inject constructor(
             Log.d(TAG, "Starting MessagingEngine pipelines")
             val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
             scope = newScope
-            
-            // Start message pipeline components
+
             messageDispatcher.start(newScope)
             incomingMessageReceiver.start(newScope)
             fileTransferReceiver.start(newScope)
-            // Proactive fetching of keys over TCP was removed; full bundle is back in the QR payload.
+
+            newScope.launch {
+                networkDiscoveryManager.networkTransitions.collect {
+                    connectionManager.closeAllConnections()
+                }
+            }
         }
-        
-        // Ensure networking components are started (they are safe to call multiple times)
-        // If Wi-Fi is already connected, the callback might not trigger immediately on registration, 
-        // or it might. Calling start() here ensures we try to connect. The callback handles actual availability.
+
         connectionManager.start()
         presenceTracker.start()
+        _isRunning.value = true
     }
 
     @Synchronized
     override fun stop() {
         Log.d(TAG, "Stopping MessagingEngine")
-        // Stop high-level pipelines first
         fileTransferReceiver.stop()
         incomingMessageReceiver.stop()
         messageDispatcher.stop()
-        
-        // Stop networking components
+
         presenceTracker.stop()
         connectionManager.stop()
-        
+
         scope?.cancel()
         scope = null
+        _isRunning.value = false
     }
 }

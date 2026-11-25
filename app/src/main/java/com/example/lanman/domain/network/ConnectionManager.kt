@@ -24,4 +24,5 @@ interface ConnectionManager {
     suspend fun sendFrame(contactId: String, frame: Frame, flush: Boolean = true): Result<Unit>
     suspend fun sendDataFrame(contactId: String, frame: Frame, flush: Boolean = true): Result<Unit>
     fun disconnectFrom(contactId: String)
+    fun closeAllConnections()
 }

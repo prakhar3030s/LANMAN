@@ -1,9 +1,8 @@
 package com.example.lanman.data.local.dao
 
 import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import com.example.lanman.data.local.entity.ContactEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -28,7 +27,10 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1")
     fun getContactById(id: String): Flow<ContactEntity?>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1")
+    fun getContactByIdSync(id: String): ContactEntity?
+
+    @Upsert
     suspend fun upsertContact(contact: ContactEntity)
 
     @Query("DELETE FROM contacts WHERE id = :id")

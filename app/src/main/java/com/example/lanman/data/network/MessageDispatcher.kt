@@ -1,15 +1,23 @@
 package com.example.lanman.data.network
 
+import android.content.Context
+import android.net.Uri
 import android.util.Log
+import com.example.lanman.data.security.SecureKeyStore
+import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageStatus
+import com.example.lanman.domain.model.MessageType
 import com.example.lanman.domain.network.ConnectionManager
 import com.example.lanman.domain.network.FileTransferProgressTracker
-import com.example.lanman.domain.network.PresenceTracker
+import com.example.lanman.domain.network.NetworkDiscoveryManager
 import com.example.lanman.domain.network.protocol.Frame
 import com.example.lanman.domain.repository.FileTransferRepository
 import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.repository.ProfileRepository
 import com.example.lanman.domain.security.EncryptionEngine
+import com.example.lanman.domain.security.StreamingEncryption
+import com.example.lanman.util.network.ByteArrayPool
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,20 +28,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileInputStream
-import java.nio.ByteBuffer
+import java.io.InputStream
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-
-import com.example.lanman.domain.network.NetworkDiscoveryManager
-
-import android.content.Context
-import android.net.Uri
-import com.example.lanman.domain.security.StreamingEncryption
-import com.example.lanman.util.network.ByteArrayPool
-import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.InputStream
-import java.security.SecureRandom
 
 @Singleton
 class MessageDispatcher @Inject constructor(
@@ -44,51 +44,45 @@ class MessageDispatcher @Inject constructor(
     private val profileRepository: ProfileRepository,
     private val fileTransferRepository: FileTransferRepository,
     private val progressTracker: FileTransferProgressTracker,
-    private val encryptionEngine: EncryptionEngine
+    private val encryptionEngine: EncryptionEngine,
+    private val secureKeyStore: SecureKeyStore
 ) {
     private val TAG = "MessageDispatcher"
     private var job: Job? = null
-    
-    // Keeps track of currently flushing contacts so we don't start multiple flush loops for the same person
-    private val flushingContacts = ConcurrentHashMap<String, Boolean>()
 
-    // Maps messageId to the last timestamp (System.currentTimeMillis) we attempted to send it
+    private val flushingContacts = ConcurrentHashMap<String, Boolean>()
     private val lastSentAttempt = ConcurrentHashMap<String, Long>()
     private val sendFailures = ConcurrentHashMap<String, Int>()
-
-    // Last time we forced a fresh socket for a contact whose queued messages stopped being
-    // acknowledged. A half-open TCP connection accepts writes silently and never delivers.
     private val lastReconnectAttempt = ConcurrentHashMap<String, Long>()
+    private val cancelledTransfers = ConcurrentHashMap<String, Boolean>()
+    private val activeFileSendContact = ConcurrentHashMap<String, Boolean>()
 
     private companion object {
         const val RETRY_INTERVAL_MS = 5_000L
         const val CONNECTION_STALE_MS = 15_000L
+        const val FILE_CONNECTION_STALE_MS = 45_000L
         const val RECONNECT_INTERVAL_MS = 30_000L
         const val MAX_SEND_FAILURES = 6
     }
 
     fun start(scope: CoroutineScope) {
         if (job != null) return
-        
+
         job = scope.launch(Dispatchers.IO) {
-            val myId = profileRepository.getProfile().firstOrNull()?.id ?: return@launch
-            
-            // Trigger 1: DB changes (new unacknowledged messages)
+            val myId = profileRepository.getProfile().firstOrNull { it != null }?.id ?: return@launch
+
             launch {
                 messageRepository.getContactsWithUnacknowledgedMessagesFlow().collect { contactIds ->
                     contactIds.forEach { contactId -> scheduleFlush(myId, contactId) }
                 }
             }
-            
-            // Trigger 2: Peer heartbeat received (someone came online)
+
             launch {
                 networkDiscoveryManager.discoveredPeers.collect { peer ->
                     scheduleFlush(myId, peer.id)
                 }
             }
 
-            // Trigger 3: Periodic retry, so a queued message is never left waiting for the
-            // peer to send something (or for the database to change) before it is re-sent.
             launch {
                 while (isActive) {
                     delay(RETRY_INTERVAL_MS)
@@ -105,12 +99,15 @@ class MessageDispatcher @Inject constructor(
         lastSentAttempt.clear()
         lastReconnectAttempt.clear()
         sendFailures.clear()
+        cancelledTransfers.clear()
+        activeFileSendContact.clear()
     }
 
-    /**
-     * Periodic safety net: retries queued messages while the peer is silent, and replaces a
-     * connection whose writes are no longer being acknowledged (stale/half-open socket).
-     */
+    /** Immediately flags an outgoing file or voice transfer as cancelled so streaming aborts mid-flight. */
+    fun cancelTransfer(messageId: String) {
+        cancelledTransfers[messageId] = true
+    }
+
     private suspend fun CoroutineScope.retryUnacknowledged(myId: String) {
         val contactIds = try {
             messageRepository.getContactsWithUnacknowledgedMessagesFlow().first()
@@ -122,6 +119,10 @@ class MessageDispatcher @Inject constructor(
 
         val now = System.currentTimeMillis()
         for (contactId in contactIds) {
+            if (activeFileSendContact.containsKey(contactId)) {
+                continue // Never drop a socket while a file transfer is actively streaming chunks
+            }
+
             val messages = try {
                 messageRepository.getUnacknowledgedMessagesForContact(contactId)
             } catch (e: Exception) {
@@ -130,19 +131,18 @@ class MessageDispatcher @Inject constructor(
             }
             if (messages.isEmpty()) continue
 
-            val oldestSilentWrite = messages
-                .filter { it.status == MessageStatus.SENT }
-                .mapNotNull { lastSentAttempt[it.id] }
-                .minOrNull()
+            val sentMessages = messages.filter { it.status == MessageStatus.SENT }
+            val oldestSilentWrite = sentMessages.mapNotNull { lastSentAttempt[it.id] }.minOrNull()
+            val hasFileInFlight = sentMessages.any { it.type != MessageType.TEXT }
+            val staleThreshold = if (hasFileInFlight) FILE_CONNECTION_STALE_MS else CONNECTION_STALE_MS
 
             if (oldestSilentWrite != null &&
-                now - oldestSilentWrite > CONNECTION_STALE_MS &&
+                now - oldestSilentWrite > staleThreshold &&
                 now - (lastReconnectAttempt[contactId] ?: 0L) > RECONNECT_INTERVAL_MS
             ) {
                 Log.w(TAG, "No ACK from $contactId for ${now - oldestSilentWrite} ms; reconnecting")
                 lastReconnectAttempt[contactId] = now
                 connectionManager.disconnectFrom(contactId)
-                // Retry immediately on the fresh socket instead of waiting out the backoff.
                 messages.forEach { lastSentAttempt.remove(it.id) }
             }
 
@@ -150,7 +150,6 @@ class MessageDispatcher @Inject constructor(
         }
     }
 
-    /** Starts a flush for [contactId] unless one is already running for it. */
     private fun CoroutineScope.scheduleFlush(myId: String, contactId: String) {
         if (flushingContacts.putIfAbsent(contactId, true) != null) return
         launch {
@@ -166,18 +165,18 @@ class MessageDispatcher @Inject constructor(
         val messages = messageRepository.getUnacknowledgedMessagesForContact(contactId)
         if (messages.isEmpty()) return
 
-        // A failed message that the user retried is PENDING again: clear its old backoff so the
-        // retry does not sit behind the exponential delay built up by the previous attempt.
         messages.forEach { message ->
-            if (message.status == MessageStatus.PENDING &&
-                (sendFailures[message.id] ?: 0) >= MAX_SEND_FAILURES
-            ) {
-                sendFailures.remove(message.id)
-                lastSentAttempt.remove(message.id)
+            if (message.status == MessageStatus.PENDING) {
+                cancelledTransfers.remove(message.id)
+                if ((sendFailures[message.id] ?: 0) >= MAX_SEND_FAILURES) {
+                    sendFailures.remove(message.id)
+                    lastSentAttempt.remove(message.id)
+                }
             }
         }
-        
+
         val now = System.currentTimeMillis()
+        // Flush TEXT messages before FILE/VOICE messages so large transfers never head-of-line block chats
         val messagesToSend = messages.filter { message ->
             val failures = sendFailures[message.id] ?: 0
             val lastAttempt = lastSentAttempt[message.id] ?: 0L
@@ -187,24 +186,41 @@ class MessageDispatcher @Inject constructor(
                 (10_000L * Math.pow(2.0, (failures - 1).coerceAtMost(6).toDouble())).toLong()
             }
             (now - lastAttempt) > backoffMs
-        }
+        }.sortedBy { if (it.type == MessageType.TEXT) 0 else 1 }
 
         if (messagesToSend.isEmpty()) return
-        
+
         Log.d(TAG, "Flushing ${messagesToSend.size} unacknowledged messages for $contactId")
-        
+
         for (message in messagesToSend) {
-            val isSuccess = if (message.type == com.example.lanman.domain.model.MessageType.FILE || message.type == com.example.lanman.domain.model.MessageType.VOICE) {
-                sendFileMessage(myId, contactId, message)
+            if (cancelledTransfers.remove(message.id) == true ||
+                messageRepository.getMessageById(message.id)?.status == MessageStatus.FAILED
+            ) {
+                continue
+            }
+
+            val isSuccess = if (message.type == MessageType.FILE || message.type == MessageType.VOICE) {
+                activeFileSendContact[contactId] = true
+                try {
+                    sendFileMessage(contactId, message)
+                } finally {
+                    activeFileSendContact.remove(contactId)
+                }
             } else {
                 sendTextMessage(myId, contactId, message)
             }
-            
+
             lastSentAttempt[message.id] = System.currentTimeMillis()
-            
+
+            if (cancelledTransfers.remove(message.id) == true ||
+                messageRepository.getMessageById(message.id)?.status == MessageStatus.FAILED
+            ) {
+                Log.d(TAG, "Transfer ${message.id} was cancelled by user")
+                continue
+            }
+
             if (isSuccess) {
                 sendFailures.remove(message.id)
-                // Only advance PENDING -> SENT; never downgrade a delivery confirmed by an ACK.
                 messageRepository.updateMessageStatusIfCurrent(
                     message.id,
                     MessageStatus.PENDING,
@@ -214,65 +230,63 @@ class MessageDispatcher @Inject constructor(
             } else {
                 val newFailures = (sendFailures[message.id] ?: 0) + 1
                 sendFailures[message.id] = newFailures
-                
+
                 if (newFailures >= MAX_SEND_FAILURES) {
                     messageRepository.updateMessageStatus(message.id, MessageStatus.FAILED)
                     Log.e(TAG, "Message ${message.id} to $contactId failed $newFailures times. Marked as FAILED.")
                 } else {
-                    Log.w(TAG, "Failed to send message ${message.id} to $contactId (failure $newFailures). Aborting flush queue.")
+                    Log.w(TAG, "Failed to send message ${message.id} (failure $newFailures). Pausing queue.")
                 }
-                break // Stop sending this queue, wait for next presence heartbeat to retry
+                break
             }
         }
     }
 
-    private suspend fun sendTextMessage(myId: String, contactId: String, message: com.example.lanman.domain.model.Message): Boolean {
+    private suspend fun sendTextMessage(myId: String, contactId: String, message: Message): Boolean {
         val ciphertext = try {
             encryptionEngine.encrypt(contactId, message.content)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to encrypt message ${message.id} for $contactId: ${e.message}", e)
-            return false 
+            Log.e(TAG, "Failed to encrypt message ${message.id}: ${e.message}", e)
+            return false
         }
 
         val frame = Frame.MessageFrame(
             messageId = message.id,
             senderId = myId,
-            messageType = 0, // TEXT
+            messageType = 0,
             timestamp = message.timestamp,
             content = ciphertext
         )
-        
+
         return connectionManager.sendFrame(contactId, frame).isSuccess
     }
 
-    private suspend fun sendFileMessage(myId: String, contactId: String, message: com.example.lanman.domain.model.Message): Boolean {
+    private suspend fun sendFileMessage(contactId: String, message: Message): Boolean {
         val fileTransfer = fileTransferRepository.getByMessageId(message.id).firstOrNull() ?: run {
             Log.e(TAG, "FileTransfer not found for message ${message.id}")
             return false
         }
-        
-        // 1. Resolve Key Material (32 bytes AES key + 12 bytes base nonce)
+
+        val storedKey = secureKeyStore.getTransferKey(fileTransfer.id)
         val keyFile = File(File(context.filesDir, "transfer_keys"), fileTransfer.id)
-        val keyAndNonce = ByteArray(44)
-        if (keyFile.exists() && keyFile.length() >= 44) {
-            FileInputStream(keyFile).use { it.read(keyAndNonce) }
-        } else {
-            // Generate on the fly if key file missing
-            val secureRandom = SecureRandom()
-            secureRandom.nextBytes(keyAndNonce)
+        val keyAndNonce = when {
+            storedKey != null && storedKey.size == 44 -> storedKey
+            keyFile.exists() && keyFile.length() >= 44 -> {
+                ByteArray(44).also { buf -> FileInputStream(keyFile).use { it.read(buf) } }
+            }
+            else -> ByteArray(44).also { SecureRandom().nextBytes(it) }
         }
-        
+
         val aesKey = keyAndNonce.copyOfRange(0, 32)
         val baseNonce = keyAndNonce.copyOfRange(32, 44)
 
-        // 2. Open input stream from content URI or absolute file path
         val inputStream: InputStream = try {
             if (fileTransfer.localUri.startsWith("content://")) {
                 context.contentResolver.openInputStream(Uri.parse(fileTransfer.localUri))
                     ?: throw IllegalArgumentException("Could not open content URI: ${fileTransfer.localUri}")
             } else {
                 val f = File(fileTransfer.localUri)
-                if (!f.exists()) throw IllegalArgumentException("Local file does not exist: ${fileTransfer.localUri}")
+                if (!f.exists()) throw IllegalArgumentException("Local file does not exist")
                 FileInputStream(f)
             }
         } catch (e: Exception) {
@@ -282,15 +296,14 @@ class MessageDispatcher @Inject constructor(
 
         return try {
             inputStream.use { sourceStream ->
-                // Encrypt envelope with Signal session
                 val envelope = encryptionEngine.encrypt(contactId, keyAndNonce)
-                
                 val chunkSize = StreamingEncryption.CHUNK_SIZE
                 val totalChunks = if (fileTransfer.fileSizeBytes > 0) {
                     ((fileTransfer.fileSizeBytes + chunkSize - 1) / chunkSize).toInt()
                 } else 0
-                
-                // 3. Send FileOffer over Control Socket
+
+                // Send FileOfferFrame on the Data Channel so Offer + Chunks + Hash + Complete share
+                // one ordered TCP stream (sendDataFrame automatically falls back to Control if needed).
                 val offerFrame = Frame.FileOfferFrame(
                     messageId = message.id,
                     fileTransferId = fileTransfer.id,
@@ -302,24 +315,35 @@ class MessageDispatcher @Inject constructor(
                     encryptedKeyEnvelope = envelope,
                     senderTimestamp = message.timestamp
                 )
-                
-                if (connectionManager.sendFrame(contactId, offerFrame).isFailure) return false
-                
-                // 4. Stream Chunks over High-Speed Data Channel using ByteArrayPool
+
+                if (connectionManager.sendDataFrame(contactId, offerFrame, flush = true).isFailure) {
+                    return false
+                }
+
+                val sha256 = MessageDigest.getInstance("SHA-256")
                 val readBuffer = ByteArrayPool.acquireChunkBuffer()
                 var chunkIndex = 0
                 var bytesSent = 0L
 
                 try {
                     while (true) {
+                        if (cancelledTransfers.containsKey(message.id) ||
+                            messageRepository.getMessageById(message.id)?.status == MessageStatus.FAILED
+                        ) {
+                            progressTracker.clearProgress(fileTransfer.id)
+                            return false
+                        }
+
                         var totalRead = 0
                         while (totalRead < chunkSize) {
                             val bytesRead = sourceStream.read(readBuffer, totalRead, chunkSize - totalRead)
                             if (bytesRead == -1) break
                             totalRead += bytesRead
                         }
-                        
-                        if (totalRead == 0) break // EOF
+
+                        if (totalRead == 0) break
+
+                        sha256.update(readBuffer, 0, totalRead)
 
                         val chunkCiphertext = StreamingEncryption.encryptChunk(
                             plaintext = readBuffer,
@@ -341,7 +365,11 @@ class MessageDispatcher @Inject constructor(
                         }
 
                         bytesSent += totalRead
-                        progressTracker.updateProgress(fileTransfer.id, bytesSent.coerceAtMost(fileTransfer.fileSizeBytes), fileTransfer.fileSizeBytes)
+                        progressTracker.updateProgress(
+                            fileTransfer.id,
+                            bytesSent.coerceAtMost(fileTransfer.fileSizeBytes.coerceAtLeast(bytesSent)),
+                            fileTransfer.fileSizeBytes.coerceAtLeast(bytesSent)
+                        )
 
                         chunkIndex++
                     }
@@ -349,16 +377,24 @@ class MessageDispatcher @Inject constructor(
                     ByteArrayPool.releaseChunkBuffer(readBuffer)
                 }
 
-                // 5. Send FileComplete over Data Channel
+                val hashFrame = Frame.FileHashFrame(fileTransfer.id, sha256.digest())
+                if (connectionManager.sendDataFrame(contactId, hashFrame, flush = false).isFailure) {
+                    return false
+                }
+
                 val completeFrame = Frame.FileCompleteFrame(fileTransfer.id)
                 val success = connectionManager.sendDataFrame(contactId, completeFrame, flush = true).isSuccess
                 if (success) {
-                    progressTracker.updateProgress(fileTransfer.id, fileTransfer.fileSizeBytes, fileTransfer.fileSizeBytes)
+                    progressTracker.updateProgress(
+                        fileTransfer.id,
+                        fileTransfer.fileSizeBytes.coerceAtLeast(bytesSent),
+                        fileTransfer.fileSizeBytes.coerceAtLeast(bytesSent)
+                    )
                 }
                 success
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stream file ${fileTransfer.fileName} to $contactId on-the-fly", e)
+            Log.e(TAG, "Failed to stream file transfer ${fileTransfer.id}", e)
             false
         }
     }

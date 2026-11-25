@@ -16,6 +16,13 @@ interface FileTransferDao {
     @Query("SELECT * FROM file_transfers WHERE messageId IN (:messageIds)")
     fun getByMessageIds(messageIds: List<String>): Flow<List<FileTransferEntity>>
 
+    @Query("""
+        SELECT ft.* FROM file_transfers ft
+        INNER JOIN messages m ON ft.messageId = m.id
+        WHERE m.contactId = :contactId
+    """)
+    suspend fun getForContactSync(contactId: String): List<FileTransferEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFileTransfer(entity: FileTransferEntity)
 

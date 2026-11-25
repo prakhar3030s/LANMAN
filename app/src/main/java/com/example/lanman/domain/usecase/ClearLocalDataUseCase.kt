@@ -47,6 +47,7 @@ class ClearLocalDataUseCase @Inject constructor(
             //    already unusable (the keys are gone), so log instead of aborting the reset.
             val privateDirs = listOf(
                 "received_files",
+                "outgoing_files",
                 "encrypted_uploads",
                 "transfer_keys",
                 "thumbnails",

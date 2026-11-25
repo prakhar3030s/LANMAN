@@ -6,12 +6,15 @@ import androidx.lifecycle.viewModelScope
 import com.example.lanman.domain.qr.ContactQrPayload
 import com.example.lanman.domain.qr.QrPayloadCodec
 import com.example.lanman.domain.repository.ProfileRepository
+import com.example.lanman.domain.security.PeerAuth
 import com.example.lanman.util.qr.QrCodeGenerator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 sealed class MyQrCodeState {
@@ -20,21 +23,21 @@ sealed class MyQrCodeState {
         val bitmap: Bitmap,
         val matrix: Array<BooleanArray>?,
         val payloadString: String,
-        val displayName: String = ""
+        val displayName: String = "",
+        val fingerprint: String? = null
     ) : MyQrCodeState() {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
-
             other as Generated
-
             if (bitmap != other.bitmap) return false
             if (matrix != null) {
                 if (other.matrix == null) return false
                 if (!matrix.contentDeepEquals(other.matrix)) return false
             } else if (other.matrix != null) return false
             if (payloadString != other.payloadString) return false
-
+            if (displayName != other.displayName) return false
+            if (fingerprint != other.fingerprint) return false
             return true
         }
 
@@ -42,6 +45,8 @@ sealed class MyQrCodeState {
             var result = bitmap.hashCode()
             result = 31 * result + (matrix?.contentDeepHashCode() ?: 0)
             result = 31 * result + payloadString.hashCode()
+            result = 31 * result + displayName.hashCode()
+            result = 31 * result + (fingerprint?.hashCode() ?: 0)
             return result
         }
     }
@@ -66,43 +71,50 @@ class MyQrCodeViewModel @Inject constructor(
                 if (profile == null) {
                     _state.value = MyQrCodeState.Error
                 } else {
-                    var fullBundleBase64: String? = null
+                    val (payloadString, fingerprint) = withContext(Dispatchers.Default) {
+                        var fullBundleBase64: String? = null
 
-                    profile.publicKeyBundle?.let { bytes ->
-                        val bos = java.io.ByteArrayOutputStream()
-                        java.util.zip.GZIPOutputStream(bos).use { it.write(bytes) }
-                        val gzippedBytes = bos.toByteArray()
-                        fullBundleBase64 = android.util.Base64.encodeToString(gzippedBytes, android.util.Base64.NO_WRAP)
+                        profile.publicKeyBundle?.let { bytes ->
+                            val bos = java.io.ByteArrayOutputStream()
+                            java.util.zip.GZIPOutputStream(bos).use { it.write(bytes) }
+                            val gzippedBytes = bos.toByteArray()
+                            fullBundleBase64 = android.util.Base64.encodeToString(
+                                gzippedBytes,
+                                android.util.Base64.NO_WRAP
+                            )
+                        }
+
+                        val payload = ContactQrPayload(
+                            version = 4,
+                            id = profile.id,
+                            displayName = profile.displayName,
+                            publicKey = null,
+                            identityKey = null,
+                            fullBundleBase64 = fullBundleBase64
+                        )
+                        val fp = PeerAuth.keyFingerprint(
+                            PeerAuth.extractIdentityKeyBase64(profile.publicKeyBundle)
+                        )
+                        QrPayloadCodec.encode(payload) to fp
                     }
 
-                    val payload = ContactQrPayload(
-                        version = 4,
-                        id = profile.id,
-                        displayName = profile.displayName,
-                        publicKey = null,
-                        identityKey = null,
-                        fullBundleBase64 = fullBundleBase64
-                    )
-                    val payloadString = QrPayloadCodec.encode(payload)
-                    android.util.Log.d("QR_DEBUG", "Payload length: ${payloadString.length}")
-                    
                     try {
                         val bitmap = QrCodeGenerator.generateQrCode(payloadString)
                         val matrix = QrCodeGenerator.generateQrBooleanMatrix(payloadString)
-                        
+
                         if (bitmap != null) {
                             _state.value = MyQrCodeState.Generated(
                                 bitmap = bitmap,
                                 matrix = matrix,
                                 payloadString = payloadString,
-                                displayName = profile.displayName
+                                displayName = profile.displayName,
+                                fingerprint = fingerprint
                             )
                         } else {
-                            android.util.Log.e("QR_DEBUG", "Bitmap generation returned null")
                             _state.value = MyQrCodeState.Error
                         }
                     } catch (e: Exception) {
-                        android.util.Log.e("QR_DEBUG", "Exception generating QR", e)
+                        android.util.Log.e("MyQrCodeVM", "Exception generating QR", e)
                         _state.value = MyQrCodeState.Error
                     }
                 }

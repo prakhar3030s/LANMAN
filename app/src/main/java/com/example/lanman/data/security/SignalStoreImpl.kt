@@ -1,7 +1,10 @@
 package com.example.lanman.data.security
 
+import com.example.lanman.data.local.dao.ContactDao
+import com.example.lanman.data.local.dao.MessageRequestDao
 import com.example.lanman.data.local.dao.SessionDao
 import com.example.lanman.data.local.entity.SessionEntity
+import com.example.lanman.domain.security.PeerAuth
 import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.SignalProtocolAddress
@@ -19,7 +22,9 @@ import javax.inject.Singleton
 @Singleton
 class SignalStoreImpl @Inject constructor(
     private val secureKeyStore: SecureKeyStore,
-    private val sessionDao: SessionDao
+    private val sessionDao: SessionDao,
+    private val contactDao: ContactDao,
+    private val messageRequestDao: MessageRequestDao
 ) : SignalProtocolStore {
 
     override fun getIdentityKeyPair(): IdentityKeyPair {
@@ -31,10 +36,13 @@ class SignalStoreImpl @Inject constructor(
     }
 
     override fun saveIdentity(address: SignalProtocolAddress?, identityKey: IdentityKey?): IdentityKeyStore.IdentityChange {
-        // Trust On First Use logic is handled in SessionManager. 
-        // Returning NEW_OR_UNCHANGED tells libsignal to keep the existing key if there's a mismatch, 
-        // which forces the connection to fail unless we manually override it.
-        return IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED 
+        val existing = getIdentity(address)
+        return if (existing == null || existing == identityKey) {
+            IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
+        } else {
+            // Never silently replace a paired contact's pinned identity key outside QR pairing.
+            IdentityKeyStore.IdentityChange.REPLACED_EXISTING
+        }
     }
 
     override fun isTrustedIdentity(
@@ -42,14 +50,30 @@ class SignalStoreImpl @Inject constructor(
         identityKey: IdentityKey?,
         direction: IdentityKeyStore.Direction?
     ): Boolean {
-        // TOFU is managed at the domain level before encrypting/decrypting.
-        // Returning true here delegates the trust decision to our domain logic.
-        return true
+        if (address == null || identityKey == null) return false
+
+        val pinned = getIdentity(address)
+        if (pinned != null) {
+            return pinned == identityKey
+        }
+
+        // For an unpaired peer sending a message request, require consistency across multiple
+        // messages from the same sender ID so a second device cannot hijack an open request.
+        val existingRequest = messageRequestDao.getRequestByContactIdSync(address.name)
+        if (existingRequest != null && existingRequest.identityKey.isNotBlank()) {
+            val requestKey = PeerAuth.parseIdentityKey(existingRequest.identityKey) ?: return false
+            return requestKey == identityKey
+        }
+
+        // First-contact message request (receiving only): allow TOFU for request review.
+        return direction == IdentityKeyStore.Direction.RECEIVING
     }
 
     override fun getIdentity(address: SignalProtocolAddress?): IdentityKey? {
-        address ?: return null
-        return null
+        val contactId = address?.name ?: return null
+        val contact = contactDao.getContactByIdSync(contactId) ?: return null
+        val keyBase64 = PeerAuth.extractIdentityKeyBase64(contact.publicKeyBundle) ?: return null
+        return PeerAuth.parseIdentityKey(keyBase64)
     }
 
     override fun loadPreKey(preKeyId: Int): org.signal.libsignal.protocol.state.PreKeyRecord {

@@ -21,8 +21,7 @@ import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.contentWidth
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
 @Composable
 fun BlockedContactsScreen(
@@ -30,11 +29,12 @@ fun BlockedContactsScreen(
     viewModel: BlockedContactsViewModel = hiltViewModel()
 ) {
     val blocked by viewModel.blocked.collectAsStateWithLifecycle()
+    val colors = LanmanTheme.colors
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
         LanmanTopBar(
             title = "Blocked contacts",
@@ -52,7 +52,7 @@ fun BlockedContactsScreen(
                     EmptyState(
                         icon = AppIcons.Block,
                         title = "No blocked contacts",
-                        message = "Contacts you block from Message Requests appear here, and their messages are dropped."
+                        message = "Contacts you block from Message Requests or Contact Info appear here, and their connections are rejected."
                     )
                 }
             } else {
@@ -80,12 +80,12 @@ fun BlockedContactsScreen(
                                     Text(
                                         text = contact.displayName,
                                         style = MaterialTheme.typography.bodyLarge,
-                                        color = TextPrimary
+                                        color = colors.textPrimary
                                     )
                                     Text(
                                         text = contact.id.take(16),
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = TextSecondary
+                                        color = colors.textSecondary
                                     )
                                 }
                                 GlassButton(

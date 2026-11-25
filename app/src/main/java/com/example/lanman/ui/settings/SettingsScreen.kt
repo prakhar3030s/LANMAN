@@ -15,13 +15,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -39,6 +44,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.lanman.data.notification.AppThemeMode
 import com.example.lanman.ui.common.AppIcons
 import com.example.lanman.ui.common.GlassDialog
 import com.example.lanman.ui.common.GlassDialogText
@@ -47,9 +53,8 @@ import com.example.lanman.ui.common.GlassTextField
 import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.contentWidth
 import com.example.lanman.ui.common.pressable
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -63,19 +68,28 @@ fun SettingsScreen(
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsStateWithLifecycle()
     val messagesEnabled by viewModel.messagesEnabled.collectAsStateWithLifecycle()
     val requestsEnabled by viewModel.requestsEnabled.collectAsStateWithLifecycle()
+    val readReceiptsEnabled by viewModel.readReceiptsEnabled.collectAsStateWithLifecycle()
+    val discoveryEnabled by viewModel.discoveryEnabled.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val blockedCount by viewModel.blockedCount.collectAsStateWithLifecycle()
     val diagnostics by viewModel.diagnostics.collectAsStateWithLifecycle()
+
+    val colors = LanmanTheme.colors
     val context = LocalContext.current
 
     var showEditNameDialog by remember { mutableStateOf(false) }
     var editNameText by remember { mutableStateOf("") }
 
+    var showThemeDialog by remember { mutableStateOf(false) }
+    var showTroubleshootingDialog by remember { mutableStateOf(false) }
+    var showPrivacyDialog by remember { mutableStateOf(false) }
     var showClearDataDialog by remember { mutableStateOf(false) }
     var showClearFilesDialog by remember { mutableStateOf(false) }
     var wipeConfirmation by remember { mutableStateOf("") }
 
     fun notificationPermissionGranted(): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
     } else {
         true
     }
@@ -118,18 +132,96 @@ fun SettingsScreen(
             onDismissRequest = { showEditNameDialog = false },
             title = "Edit display name",
             confirmLabel = "Save",
-            confirmEnabled = editNameText.isNotBlank(),
+            confirmEnabled = editNameText.isNotBlank() && editNameText.trim().length <= 30,
             onConfirm = {
                 viewModel.updateDisplayName(editNameText)
                 showEditNameDialog = false
             }
         ) {
-            GlassDialogText("This is the name your contacts see when they pair with you.")
+            GlassDialogText("This is the name shown on your QR code and initial pairing handshakes.")
             Spacer(modifier = Modifier.height(12.dp))
             GlassTextField(
                 value = editNameText,
                 onValueChange = { editNameText = it },
                 placeholder = "Your name"
+            )
+        }
+    }
+
+    if (showThemeDialog) {
+        GlassDialog(
+            onDismissRequest = { showThemeDialog = false },
+            title = "Appearance",
+            confirmLabel = "Done",
+            dismissLabel = null,
+            onConfirm = { showThemeDialog = false }
+        ) {
+            AppThemeMode.entries.forEach { mode ->
+                val label = when (mode) {
+                    AppThemeMode.DARK -> "Dark (Translucent Monolith)"
+                    AppThemeMode.LIGHT -> "Light"
+                    AppThemeMode.SYSTEM -> "Follow system"
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pressable {
+                            viewModel.setThemeMode(mode)
+                            showThemeDialog = false
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = themeMode == mode,
+                        onClick = {
+                            viewModel.setThemeMode(mode)
+                            showThemeDialog = false
+                        },
+                        colors = RadioButtonDefaults.colors(selectedColor = colors.accent)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(label, style = MaterialTheme.typography.bodyLarge, color = colors.textPrimary)
+                }
+            }
+        }
+    }
+
+    if (showTroubleshootingDialog) {
+        GlassDialog(
+            onDismissRequest = { showTroubleshootingDialog = false },
+            title = "Local Network Diagnostics",
+            confirmLabel = "Refresh",
+            dismissLabel = "Close",
+            onConfirm = { viewModel.refreshDiagnostics() }
+        ) {
+            GlassDialogText(
+                "LANMAN discovers peers using UDP broadcast (port ${viewModel.discoveryPort}) and mDNS, " +
+                    "then connects directly over TCP (ports ${viewModel.controlPort} & ${viewModel.dataPort}).\n\n" +
+                    "If nearby paired devices appear offline:\n" +
+                    "1. Confirm both devices are connected to the exact same Wi-Fi SSID/subnet.\n" +
+                    "2. Disable any active VPN on either phone (VPNs hijack local routes).\n" +
+                    "3. Guest/public Wi-Fi routers often enable AP/Client Isolation, which blocks device-to-device packets.\n" +
+                    "4. Check that battery optimization isn't killing LANMAN in the background."
+            )
+        }
+    }
+
+    if (showPrivacyDialog) {
+        GlassDialog(
+            onDismissRequest = { showPrivacyDialog = false },
+            title = "Privacy & Security Model",
+            confirmLabel = "Got it",
+            dismissLabel = null,
+            onConfirm = { showPrivacyDialog = false }
+        ) {
+            GlassDialogText(
+                "Zero Cloud Footprint:\n" +
+                    "\u2022 LANMAN connects to no servers, cloud databases, or analytics.\n" +
+                    "\u2022 Android Cloud Backup is disabled so your messages and keys are never uploaded.\n" +
+                    "\u2022 Messages are end-to-end encrypted with the Signal Protocol (PQXDH + Double Ratchet) and files with AES-256-GCM.\n" +
+                    "\u2022 Your private keys and file transfer keys are protected in Android Keystore-backed EncryptedSharedPreferences.\n" +
+                    "\u2022 Only your device ID (UUID) is announced over local Wi-Fi so paired peers can locate your IP address."
             )
         }
     }
@@ -184,9 +276,20 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
-        LanmanTopBar(title = "Settings")
+        LanmanTopBar(
+            title = "Settings",
+            actions = {
+                IconButton(onClick = { viewModel.refreshDiagnostics() }) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh diagnostics",
+                        tint = colors.textPrimary
+                    )
+                }
+            }
+        )
 
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             Column(
@@ -195,7 +298,6 @@ fun SettingsScreen(
                     .fillMaxHeight()
                     .verticalScroll(rememberScrollState())
             ) {
-                // Profile
                 SettingsSectionTitle("Profile")
                 SettingsGroup {
                     SettingsItem(
@@ -211,12 +313,54 @@ fun SettingsScreen(
                     SettingsItem(
                         icon = Icons.Default.Share,
                         title = "My QR code",
-                        subtitle = "Show your code to connect",
+                        subtitle = "Show your code & verification key to pair",
                         onClick = onNavigateToMyQr
                     )
                 }
 
-                // Notifications
+                SettingsSectionTitle("Appearance")
+                SettingsGroup {
+                    SettingsItem(
+                        icon = Icons.Default.Info,
+                        title = "Theme",
+                        subtitle = when (themeMode) {
+                            AppThemeMode.DARK -> "Dark"
+                            AppThemeMode.LIGHT -> "Light"
+                            AppThemeMode.SYSTEM -> "System default"
+                        },
+                        onClick = { showThemeDialog = true }
+                    )
+                }
+
+                SettingsSectionTitle("Privacy")
+                SettingsGroup {
+                    SettingsSwitchItem(
+                        icon = AppIcons.DoneAll,
+                        title = "Read receipts",
+                        subtitle = "Let paired contacts know when you've read messages",
+                        checked = readReceiptsEnabled,
+                        onCheckedChange = viewModel::setReadReceiptsEnabled
+                    )
+                    SettingsDivider()
+                    SettingsItem(
+                        icon = AppIcons.Block,
+                        title = "Blocked contacts",
+                        subtitle = when {
+                            blockedCount == 0 -> "Nobody is blocked"
+                            blockedCount == 1 -> "1 contact blocked"
+                            else -> "$blockedCount contacts blocked"
+                        },
+                        onClick = onNavigateToBlockedContacts
+                    )
+                    SettingsDivider()
+                    SettingsItem(
+                        icon = Icons.Default.Lock,
+                        title = "Privacy & security model",
+                        subtitle = "What stays on your device vs. local network",
+                        onClick = { showPrivacyDialog = true }
+                    )
+                }
+
                 SettingsSectionTitle("Notifications")
                 SettingsGroup {
                     SettingsSwitchItem(
@@ -252,7 +396,7 @@ fun SettingsScreen(
                     SettingsSwitchItem(
                         icon = Icons.Default.Notifications,
                         title = "Message requests",
-                        subtitle = "Alert when a stranger writes to you",
+                        subtitle = "Alert when an unpaired peer writes to you",
                         checked = requestsEnabled,
                         enabled = notificationsEnabled,
                         onCheckedChange = viewModel::setRequestsEnabled
@@ -260,93 +404,97 @@ fun SettingsScreen(
                     SettingsDivider()
                     SettingsItem(
                         icon = Icons.Default.Info,
-                        title = "System settings",
-                        subtitle = "Channels, sound and vibration",
+                        title = "System notification settings",
+                        subtitle = "Channels, lockscreen preview, sound",
                         onClick = { openSystemNotificationSettings() }
                     )
                 }
 
-                // Privacy
-                SettingsSectionTitle("Privacy")
-                SettingsGroup {
-                    SettingsItem(
-                        icon = AppIcons.Block,
-                        title = "Blocked contacts",
-                        subtitle = when {
-                            blockedCount == 0 -> "Nobody is blocked"
-                            blockedCount == 1 -> "1 contact blocked"
-                            else -> "$blockedCount contacts blocked"
-                        },
-                        onClick = onNavigateToBlockedContacts
-                    )
-                }
-
-                // Network diagnostics
                 SettingsSectionTitle("Network")
                 SettingsGroup {
+                    SettingsSwitchItem(
+                        icon = AppIcons.Wifi,
+                        title = "Background local discovery",
+                        subtitle = if (discoveryEnabled) "Listening on Wi-Fi in background" else "Paused (battery saver)",
+                        checked = discoveryEnabled,
+                        onCheckedChange = viewModel::setDiscoveryEnabled
+                    )
+                    SettingsDivider()
                     InfoRow(
                         icon = AppIcons.Wifi,
                         title = "This device",
                         subtitle = diagnostics.addresses.joinToString(", ")
-                            .ifBlank { "No network address" }
+                            .ifBlank { if (diagnostics.isWifiConnected) "Connected (no IPv4)" else "No Wi-Fi connection" }
                     )
                     SettingsDivider()
                     InfoRow(
                         icon = AppIcons.Wifi,
-                        title = "Discovery port",
-                        subtitle = "UDP ${viewModel.discoveryPort}"
+                        title = "Local ports",
+                        subtitle = "UDP ${viewModel.discoveryPort} (discovery) \u00B7 TCP ${viewModel.controlPort}/${viewModel.dataPort}"
                     )
                     SettingsDivider()
                     InfoRow(
                         icon = Icons.Default.Person,
-                        title = "Devices",
+                        title = "Paired devices",
                         subtitle = "${diagnostics.onlineCount} online of ${diagnostics.contactCount} paired"
                     )
                     SettingsDivider()
                     InfoRow(
                         icon = Icons.Default.Info,
-                        title = "Radar service",
-                        subtitle = if (diagnostics.serviceRunning) "Running" else "Stopped"
+                        title = "Messaging engine",
+                        subtitle = when {
+                            diagnostics.lastError != null -> diagnostics.lastError!!
+                            diagnostics.serviceRunning -> "Active"
+                            else -> "Paused"
+                        }
+                    )
+                    SettingsDivider()
+                    SettingsItem(
+                        icon = Icons.Default.Info,
+                        title = "Troubleshoot discovery",
+                        subtitle = "AP isolation, VPN, and router tips",
+                        onClick = { showTroubleshootingDialog = true }
                     )
                 }
 
-                // Data
                 SettingsSectionTitle("Data")
                 SettingsGroup {
                     SettingsItem(
                         icon = Icons.Default.Delete,
                         title = "Received files",
-                        subtitle = if (receivedFilesSize > 0L) "${formatSize(receivedFilesSize)} \u00B7 Tap to clear" else "Nothing downloaded yet",
-                        titleColor = if (receivedFilesSize > 0L) MaterialTheme.colorScheme.error else TextPrimary,
+                        subtitle = if (receivedFilesSize > 0L) {
+                            "${formatSize(receivedFilesSize)} \u00B7 Tap to clear"
+                        } else {
+                            "Nothing downloaded yet"
+                        },
+                        titleColor = if (receivedFilesSize > 0L) colors.error else colors.textPrimary,
                         onClick = { if (receivedFilesSize > 0L) showClearFilesDialog = true }
                     )
                     SettingsDivider()
                     SettingsItem(
                         icon = Icons.Default.Warning,
                         title = "Clear local data",
-                        subtitle = "Wipe keys and history",
-                        titleColor = MaterialTheme.colorScheme.error,
+                        subtitle = "Wipe keys, contacts, and history",
+                        titleColor = colors.error,
                         onClick = { showClearDataDialog = true }
                     )
                 }
 
-                // About
                 SettingsSectionTitle("About")
                 SettingsGroup {
-                    SettingsItem(
+                    InfoRow(
                         icon = Icons.Default.Info,
                         title = "Version",
-                        subtitle = "1.0.0 (LANMAN Build)",
-                        onClick = {}
+                        subtitle = viewModel.appVersionLabel
                     )
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Text(
-                    text = "Zero Cloud Footprint. Your data never leaves your device.",
+                    text = "Zero Cloud Footprint. Your data never leaves your local network.",
                     style = MaterialTheme.typography.labelMedium,
-                    color = TextSecondary,
+                    color = colors.textSecondary,
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
 
@@ -359,8 +507,8 @@ fun SettingsScreen(
 private fun formatSize(bytes: Long): String {
     return when {
         bytes < 1024 -> "$bytes B"
-        bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.0f KB", bytes / 1024f)
-        else -> String.format(java.util.Locale.US, "%.1f MB", bytes / (1024f * 1024f))
+        bytes < 1024 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024f)
+        else -> String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f))
     }
 }
 
@@ -369,7 +517,7 @@ fun SettingsSectionTitle(title: String) {
     Text(
         text = title,
         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-        color = ElectricCyan,
+        color = LanmanTheme.colors.accent,
         modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 8.dp)
     )
 }
@@ -388,7 +536,7 @@ fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
 
 @Composable
 private fun SettingsDivider() {
-    Divider(color = Color.White.copy(alpha = 0.08f))
+    HorizontalDivider(color = LanmanTheme.colors.border)
 }
 
 @Composable
@@ -396,9 +544,10 @@ fun SettingsItem(
     icon: ImageVector,
     title: String,
     subtitle: String,
-    titleColor: Color = TextPrimary,
+    titleColor: Color = LanmanTheme.colors.textPrimary,
     onClick: () -> Unit
 ) {
+    val colors = LanmanTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -410,7 +559,7 @@ fun SettingsItem(
         Spacer(modifier = Modifier.width(16.dp))
         Column {
             Text(title, style = MaterialTheme.typography.bodyLarge, color = titleColor)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary)
         }
     }
 }
@@ -424,6 +573,7 @@ private fun SettingsSwitchItem(
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val colors = LanmanTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -433,50 +583,50 @@ private fun SettingsSwitchItem(
         Icon(
             icon,
             contentDescription = null,
-            tint = if (enabled) TextPrimary else TextSecondary.copy(alpha = 0.5f)
+            tint = if (enabled) colors.textPrimary else colors.textTertiary
         )
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 title,
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (enabled) TextPrimary else TextSecondary
+                color = if (enabled) colors.textPrimary else colors.textSecondary
             )
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary)
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             enabled = enabled,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.Black,
-                checkedTrackColor = ElectricCyan,
-                uncheckedThumbColor = TextSecondary,
-                uncheckedTrackColor = Color.White.copy(alpha = 0.10f),
-                uncheckedBorderColor = Color.White.copy(alpha = 0.20f)
+                checkedThumbColor = colors.onAccent,
+                checkedTrackColor = colors.accent,
+                uncheckedThumbColor = colors.textSecondary,
+                uncheckedTrackColor = colors.surfaceCard,
+                uncheckedBorderColor = colors.border
             )
         )
     }
 }
 
-/** Read-only value row for diagnostics. */
 @Composable
 private fun InfoRow(
     icon: ImageVector,
     title: String,
     subtitle: String
 ) {
+    val colors = LanmanTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = TextSecondary)
+        Icon(icon, contentDescription = null, tint = colors.textSecondary)
         Spacer(modifier = Modifier.width(16.dp))
         Column {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = colors.textPrimary)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary)
         }
     }
 }

@@ -18,6 +18,7 @@ import com.example.lanman.domain.model.MessageRequest
 import com.example.lanman.domain.network.IncomingFrameEvent
 import com.example.lanman.data.notification.NotificationHelper
 import com.example.lanman.data.security.BlockedContactsStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +28,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 import android.content.Context
+import com.example.lanman.data.security.SecureKeyStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 
 @Singleton
@@ -41,28 +43,41 @@ class IncomingMessageReceiver @Inject constructor(
     private val activeConversationTracker: ActiveConversationTracker,
     private val profileRepository: ProfileRepository,
     private val messageRequestRepository: MessageRequestRepository,
-    private val blockedContactsStore: BlockedContactsStore
+    private val blockedContactsStore: BlockedContactsStore,
+    private val secureKeyStore: SecureKeyStore
 ) {
     private val TAG = "IncomingMessageReceiver"
     private var job: Job? = null
 
     // Rate limit for asking a peer to re-handshake after a message we could not decrypt.
     private val lastKeyBundleRequest = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val lastSessionResetFromPeer = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    // Bounded deduplication cache for unpaired peers whose messages are stored in message_requests
+    // (where the messages table foreign key cannot deduplicate by messageId yet).
+    private val seenRequestMessageIds = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean = size > 512
+    }
 
     fun start(scope: CoroutineScope) {
         if (job != null) return
         
         job = scope.launch(Dispatchers.IO) {
             connectionManager.incomingFrames.collect { event ->
-                val contactId = event.contactId
-                val frame = event.frame
-                when (frame) {
-                    is Frame.MessageFrame -> handleMessageFrame(event)
-                    is Frame.AckFrame -> handleAckFrame(contactId, frame)
-                    is Frame.ReadFrame -> handleReadFrame(contactId, frame)
-                    is Frame.KeyBundleRequestFrame -> handleKeyBundleRequest(contactId, frame)
-                    is Frame.KeyBundleResponseFrame -> handleKeyBundleResponse(contactId, frame)
-                    else -> {}
+                try {
+                    val contactId = event.contactId
+                    val frame = event.frame
+                    when (frame) {
+                        is Frame.MessageFrame -> handleMessageFrame(event)
+                        is Frame.AckFrame -> handleAckFrame(contactId, frame)
+                        is Frame.ReadFrame -> handleReadFrame(contactId, frame)
+                        is Frame.KeyBundleRequestFrame -> handleKeyBundleRequest(contactId, frame)
+                        is Frame.KeyBundleResponseFrame -> handleKeyBundleResponse(contactId, frame)
+                        else -> {}
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing incoming frame", e)
                 }
             }
         }
@@ -71,6 +86,9 @@ class IncomingMessageReceiver @Inject constructor(
     fun stop() {
         job?.cancel()
         job = null
+        synchronized(seenRequestMessageIds) {
+            seenRequestMessageIds.clear()
+        }
     }
 
     private suspend fun handleMessageFrame(event: IncomingFrameEvent) {
@@ -104,22 +122,44 @@ class IncomingMessageReceiver @Inject constructor(
         // A connection is flagged unknown when it opened, but the user can accept the request or
         // pair the device while it is still open, so always re-check the contact table.
         if (contactRepository.getContactById(contactId).firstOrNull() == null) {
+            val isDuplicateRequest = synchronized(seenRequestMessageIds) {
+                if (seenRequestMessageIds.containsKey(frame.messageId)) {
+                    true
+                } else {
+                    seenRequestMessageIds[frame.messageId] = true
+                    false
+                }
+            }
+            if (isDuplicateRequest) {
+                connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
+                Log.d(TAG, "Ignoring duplicate message request ${frame.messageId}, re-sent ACK.")
+                return
+            }
+
             val displayName = event.unknownDisplayName ?: "Unknown"
             val identityKey = event.unknownIdentityKey ?: ""
+            val newText = String(plaintext, Charsets.UTF_8)
+            val existingRequest = messageRequestRepository.getAllMessageRequests().firstOrNull()
+                ?.find { it.contactId == contactId }
+            val combinedText = if (existingRequest != null && existingRequest.firstMessageText.isNotBlank()) {
+                "${existingRequest.firstMessageText}\n$newText".takeLast(500)
+            } else {
+                newText
+            }
             val request = MessageRequest(
                 contactId = contactId,
                 displayName = displayName,
                 identityKey = identityKey,
                 timestamp = frame.timestamp,
-                firstMessageText = String(plaintext, Charsets.UTF_8)
+                firstMessageText = combinedText
             )
             messageRequestRepository.addMessageRequest(request)
             connectionManager.sendFrame(contactId, Frame.AckFrame(frame.messageId))
-            Log.d(TAG, "Received message from unknown contact $contactId. Saved as Message Request.")
+            Log.d(TAG, "Received message from unknown contact. Saved as Message Request.")
             notificationHelper.showMessageRequestNotification(
                 contactId = contactId,
                 senderName = displayName,
-                preview = request.firstMessageText
+                preview = newText
             )
             return
         }
@@ -151,17 +191,25 @@ class IncomingMessageReceiver @Inject constructor(
     }
 
     private suspend fun handleAckFrame(contactId: String, frame: Frame.AckFrame) {
+        if (blockedContactsStore.isBlocked(contactId)) return
         val existing = messageRepository.getMessageById(frame.messageId) ?: return
+        if (existing.contactId != contactId) return
         if (existing.status == MessageStatus.PENDING || existing.status == MessageStatus.SENT) {
             messageRepository.updateMessageStatus(frame.messageId, MessageStatus.DELIVERED)
-            Log.d(TAG, "Message ${frame.messageId} marked as DELIVERED from $contactId")
+            Log.d(TAG, "Message ${frame.messageId} marked as DELIVERED")
             
             if ((existing.type == MessageType.FILE || existing.type == MessageType.VOICE) && existing.direction == MessageDirection.OUTGOING) {
                 val fileTransfer = fileTransferRepository.getByMessageId(frame.messageId).firstOrNull()
                 if (fileTransfer != null) {
+                    secureKeyStore.removeTransferKey(fileTransfer.id)
                     val keyFile = java.io.File(java.io.File(context.filesDir, "transfer_keys"), fileTransfer.id)
                     if (keyFile.exists()) {
                         keyFile.delete()
+                    }
+                    // Clean up staged temporary copy in outgoing_files if SendFileUseCase created one.
+                    val outgoingFile = java.io.File(java.io.File(context.filesDir, "outgoing_files"), fileTransfer.id)
+                    if (outgoingFile.exists() && fileTransfer.localUri == outgoingFile.absolutePath) {
+                        outgoingFile.delete()
                     }
                 }
             }
@@ -169,50 +217,56 @@ class IncomingMessageReceiver @Inject constructor(
     }
 
     private suspend fun handleReadFrame(contactId: String, frame: Frame.ReadFrame) {
+        if (blockedContactsStore.isBlocked(contactId)) return
         val existing = messageRepository.getMessageById(frame.messageId) ?: return
-        if (existing.status != MessageStatus.READ) {
+        if (existing.contactId != contactId) return
+        if (existing.direction == MessageDirection.OUTGOING && existing.status != MessageStatus.READ) {
             messageRepository.updateMessageStatus(frame.messageId, MessageStatus.READ)
-            Log.d(TAG, "Message ${frame.messageId} marked as READ from $contactId")
+            Log.d(TAG, "Message ${frame.messageId} marked as READ")
         }
     }
 
     private suspend fun handleKeyBundleRequest(contactId: String, frame: Frame.KeyBundleRequestFrame) {
+        if (blockedContactsStore.isBlocked(contactId)) return
+        if (contactRepository.getContactById(contactId).firstOrNull() == null) return
         val myProfile = profileRepository.getProfile().firstOrNull() ?: return
         myProfile.publicKeyBundle?.let { bundle ->
             connectionManager.sendFrame(contactId, Frame.KeyBundleResponseFrame(bundle))
-            Log.d(TAG, "Sent KeyBundleResponseFrame to $contactId")
-            // Either the peer just paired (it needs our bundle) or it could not decrypt what we
-            // sent. Dropping our side of the session makes the next message a prekey message,
-            // which is the only thing a peer with no usable session can read.
-            encryptionEngine.deleteSession(contactId)
+            val now = System.currentTimeMillis()
+            if (now - (lastSessionResetFromPeer[contactId] ?: 0L) > KEY_BUNDLE_REQUEST_INTERVAL_MS) {
+                lastSessionResetFromPeer[contactId] = now
+                // Either the peer just paired (it needs our bundle) or it could not decrypt what we
+                // sent. Dropping our side of the session makes the next message a prekey message.
+                encryptionEngine.deleteSession(contactId)
+            }
         }
     }
 
-    private suspend fun handleKeyBundleResponse(contactId: String, frame: Frame.KeyBundleResponseFrame) {        val contact = contactRepository.getContactById(contactId).firstOrNull() ?: return
+    private suspend fun handleKeyBundleResponse(contactId: String, frame: Frame.KeyBundleResponseFrame) {
+        if (blockedContactsStore.isBlocked(contactId)) return
+        val contact = contactRepository.getContactById(contactId).firstOrNull() ?: return
         
         try {
-            val incomingJson = org.json.JSONObject(String(frame.bundle, Charsets.UTF_8))
-            val incomingIdentityKey = incomingJson.optString("identityKey", null)
-            
+            val incomingIdentityKey = com.example.lanman.domain.security.PeerAuth.extractIdentityKeyBase64(frame.bundle)
+
             if (contact.publicKeyBundle != null) {
-                val savedJson = org.json.JSONObject(String(contact.publicKeyBundle, Charsets.UTF_8))
-                val savedIdentityKey = savedJson.optString("identityKey", "")
+                val savedIdentityKey = com.example.lanman.domain.security.PeerAuth.extractIdentityKeyBase64(contact.publicKeyBundle)
                 // An accepted message request starts with an identity-key-only bundle; in that
                 // case there is nothing to compare against yet, so adopt the full bundle.
                 val identityMatches = incomingIdentityKey != null &&
-                    (savedIdentityKey.isBlank() || incomingIdentityKey == savedIdentityKey)
-                
+                    (savedIdentityKey.isNullOrBlank() || incomingIdentityKey == savedIdentityKey)
+
                 if (identityMatches) {
                     contactRepository.upsertContact(contact.copy(publicKeyBundle = frame.bundle))
-                    Log.d(TAG, "Successfully received and verified full key bundle for $contactId")
+                    Log.d(TAG, "Successfully received and verified full key bundle")
                 } else {
-                    Log.e(TAG, "KeyBundleResponseFrame identityKey mismatch for $contactId. Expected $savedIdentityKey, got $incomingIdentityKey")
+                    Log.e(TAG, "KeyBundleResponseFrame identityKey mismatch for contact")
                 }
             } else {
-                Log.e(TAG, "Cannot verify KeyBundleResponseFrame for $contactId: No partial bundle saved.")
+                Log.e(TAG, "Cannot verify KeyBundleResponseFrame: No partial bundle saved.")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse KeyBundleResponseFrame for $contactId", e)
+            Log.e(TAG, "Failed to parse KeyBundleResponseFrame", e)
         }
     }
 

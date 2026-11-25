@@ -1,4 +1,11 @@
 # ====================================================================
+# Documentation & Markdown (keep only root README.md)
+# ====================================================================
+*.md
+*.MD
+!/README.md
+
+# ====================================================================
 # Built Binaries and Packaging Artifacts
 # ====================================================================
 *.apk
@@ -6,6 +13,9 @@
 *.aab
 *.dex
 *.class
+*.idsig
+output-metadata.json
+mapping.txt
 .freebuff/
 
 # ====================================================================
@@ -16,6 +26,8 @@ gen/
 out/
 build/
 **/build/
+lint-results*.html
+lint-results*.xml
 build_output.txt
 deps.txt
 
@@ -32,6 +44,8 @@ kotlin-js-store/
 # Machine-specific SDK/signing paths and real signing credentials.
 local.properties
 keystore.properties
+signing.properties
+release.properties
 secrets.properties
 api_keys.properties
 api-keys.properties
@@ -43,6 +57,7 @@ api-keys.properties
 *.p12
 *.pfx
 *.p8
+*.pk8
 *.key
 *.pem
 *.der
@@ -93,9 +108,10 @@ captures/
 cmake-build-*/
 
 # ====================================================================
-# OS & Editor Specific Files
+# OS, Editor & AI/Dev Tooling Files
 # ====================================================================
 .DS_Store
+._*
 Thumbs.db
 desktop.ini
 ehthumbs.db
@@ -103,17 +119,43 @@ ehthumbs.db
 *.swp
 *.swo
 .vscode/
+.fleet/
+.antigravity/
+.claude/
+.cursor/
+.codex/
+.gemini/
+.cloud-attachments/
 
 # ====================================================================
-# Log Files & Crash Dumps
+# Log Files, Crash Dumps, Databases & Traces
 # ====================================================================
 *.log
+logcat*.txt
 *.hprof
 hs_err_pid*
+replay_pid*
+*.stackdump
+*.trace
+*.cpuprofile
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 
 # ====================================================================
-# Local Scratch & One-off Test Scripts
+# Local Scratch, Temp Directories & One-off Test Scripts
 # ====================================================================
+scratch/
+tmp/
+temp/
+logs/
+__pycache__/
+*.pyc
+*.tmp
+*.temp
+ui.xml
 Test*.java
 Test*.kt
 Test*.class

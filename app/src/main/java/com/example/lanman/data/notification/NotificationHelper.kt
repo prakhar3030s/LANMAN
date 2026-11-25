@@ -71,18 +71,25 @@ class NotificationHelper @Inject constructor(
         }
 
         val pendingIntent = conversationPendingIntent(contactId, contactId.hashCode())
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("LANMAN")
+            .setContentText("New encrypted message")
+            .build()
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(senderName)
             .setContentText(contentText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setGroup(contactId)
             .build()
 
-        NotificationManagerCompat.from(context).notify(contactId.hashCode(), notification)
+        notifySafely(contactId.hashCode(), notification)
     }
 
     /** Tells the user that someone they have not paired with is trying to message them. */
@@ -91,17 +98,38 @@ class NotificationHelper @Inject constructor(
         if (!preferences.enabled) return
         if (!preferences.requestsEnabled) return
 
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("LANMAN")
+            .setContentText("New message request")
+            .build()
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("$senderName wants to message you")
             .setContentText(preview.ifBlank { "Tap to review the request" })
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .setContentIntent(requestsPendingIntent(contactId))
             .setAutoCancel(true)
             .setGroup("message_requests")
             .build()
 
-        NotificationManagerCompat.from(context).notify(REQUEST_NOTIFICATION_BASE + contactId.hashCode(), notification)
+        notifySafely(REQUEST_NOTIFICATION_BASE + contactId.hashCode(), notification)
+    }
+
+    private fun notifySafely(id: Int, notification: android.app.Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission revoked concurrently
+        }
     }
 
     private fun conversationPendingIntent(contactId: String, requestCode: Int): PendingIntent {

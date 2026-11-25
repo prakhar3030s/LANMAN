@@ -70,7 +70,7 @@ class ProfileRepositoryImpl @Inject constructor(
     }
 
     override suspend fun upsertProfile(profile: Profile) {
-        // Implementation for upserting would use entity mapping
+        profileDao.upsertProfile(profile.toEntity())
     }
 
     override suspend fun hasProfile(): Boolean {

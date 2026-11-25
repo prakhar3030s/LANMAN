@@ -5,18 +5,26 @@ import android.content.pm.PackageManager
 import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.OptIn
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,37 +32,42 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.GlassTextField
+import com.example.lanman.ui.common.QrCodeIcon
 import com.example.lanman.ui.theme.Black
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
+import com.example.lanman.ui.theme.LanmanTheme
+import com.example.lanman.ui.theme.White
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 
-@OptIn(androidx.camera.core.ExperimentalGetImage::class)
+@OptIn(ExperimentalGetImage::class)
 @Composable
 fun ScanContactScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToMyQr: () -> Unit = {},
     viewModel: ScanContactViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    
+    val colors = LanmanTheme.colors
+
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -79,17 +92,36 @@ fun ScanContactScreen(
         }
     }
 
+    // Own CameraX executor and ML Kit scanner lifecycle so leaving the screen never leaks threads.
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val barcodeScanner = remember {
+        BarcodeScanning.getClient(
+            BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+        )
+    }
+    var cameraProviderRef by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { cameraProviderRef?.unbindAll() }
+            runCatching { barcodeScanner.close() }
+            analysisExecutor.shutdown()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
+            .imePadding()
     ) {
         when (val currentState = state) {
             is ScanContactState.Scanning -> {
                 Column(modifier = Modifier.fillMaxSize()) {
                     if (hasCameraPermission) {
                         Box(modifier = Modifier.weight(1f)) {
-                            // Camera Preview
                             AndroidView(
                                 factory = { ctx ->
                                     val previewView = PreviewView(ctx)
@@ -97,25 +129,27 @@ fun ScanContactScreen(
 
                                     cameraProviderFuture.addListener({
                                         val cameraProvider = cameraProviderFuture.get()
+                                        cameraProviderRef = cameraProvider
 
                                         val preview = Preview.Builder().build().also {
                                             it.setSurfaceProvider(previewView.surfaceProvider)
                                         }
 
-                                        val barcodeScanner = BarcodeScanning.getClient(
-                                            BarcodeScannerOptions.Builder()
-                                                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                                                .build()
-                                        )
+                                        val resolutionSelector = ResolutionSelector.Builder()
+                                            .setResolutionStrategy(
+                                                ResolutionStrategy(
+                                                    Size(1280, 720),
+                                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                                )
+                                            )
+                                            .build()
 
                                         val imageAnalysis = ImageAnalysis.Builder()
-                                            .setTargetResolution(Size(1280, 720))
+                                            .setResolutionSelector(resolutionSelector)
                                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                             .build()
 
-                                        val executor = Executors.newSingleThreadExecutor()
-
-                                        imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                                        imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                                             if (viewModel.state.value !is ScanContactState.Scanning) {
                                                 imageProxy.close()
                                                 return@setAnalyzer
@@ -123,13 +157,14 @@ fun ScanContactScreen(
 
                                             val mediaImage = imageProxy.image
                                             if (mediaImage != null) {
-                                                val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                                                val image = InputImage.fromMediaImage(
+                                                    mediaImage,
+                                                    imageProxy.imageInfo.rotationDegrees
+                                                )
                                                 barcodeScanner.process(image)
                                                     .addOnSuccessListener { barcodes ->
-                                                        for (barcode in barcodes) {
-                                                            barcode.rawValue?.let { code ->
-                                                                viewModel.onCodeScannedOrEntered(code)
-                                                            }
+                                                        barcodes.firstOrNull()?.rawValue?.let { code ->
+                                                            viewModel.onCodeScannedOrEntered(code)
                                                         }
                                                     }
                                                     .addOnCompleteListener {
@@ -140,7 +175,7 @@ fun ScanContactScreen(
                                             }
                                         }
 
-                                        try {
+                                        runCatching {
                                             cameraProvider.unbindAll()
                                             cameraProvider.bindToLifecycle(
                                                 lifecycleOwner,
@@ -148,93 +183,187 @@ fun ScanContactScreen(
                                                 preview,
                                                 imageAnalysis
                                             )
-                                        } catch (e: Exception) {
-                                            // Ignore
                                         }
                                     }, ContextCompat.getMainExecutor(ctx))
                                     previewView
                                 },
                                 modifier = Modifier.fillMaxSize()
                             )
-                            
-                            // Glass Viewfinder Overlay
+
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.Center)
-                                    .size(280.dp)
-                                    .border(2.dp, ElectricCyan.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+                                    .size(260.dp)
+                                    .border(2.dp, colors.accent.copy(alpha = 0.7f), RoundedCornerShape(24.dp))
                                     .padding(8.dp)
                             ) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .border(1.dp, ElectricCyan.copy(alpha = 0.2f), RoundedCornerShape(16.dp))
+                                        .border(1.dp, colors.accent.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
                                 )
                             }
+
+                            Text(
+                                text = "Point at a LANMAN QR code",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = White,
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 16.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Black.copy(alpha = 0.65f))
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
                         }
                     } else {
-                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "Camera permission is required to scan QR codes.\nYou can still enter a code manually below.",
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary,
-                                modifier = Modifier.padding(16.dp)
-                            )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "Camera access is needed to scan QR codes.\nYou can still paste a pairing code below.",
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = colors.textPrimary
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                GlassButton(
+                                    text = "Grant Camera Permission",
+                                    onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                                    isPrimary = true
+                                )
+                            }
                         }
                     }
 
                     ManualEntrySection(
-
                         onAddClicked = { viewModel.onCodeScannedOrEntered(it) }
                     )
                 }
             }
-            
+
             is ScanContactState.Validating -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = ElectricCyan)
+                    CircularProgressIndicator(color = colors.accent)
                 }
             }
-            
+
             is ScanContactState.ConfirmationRequired -> {
                 Dialog(onDismissRequest = { viewModel.resetToScanning() }) {
                     GlassSurface(
-
-                        modifier = Modifier.fillMaxWidth().padding(16.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        tint = colors.dialogSurface,
+                        shape = RoundedCornerShape(20.dp)
                     ) {
                         Column(
-                            modifier = Modifier.padding(24.dp),
+                            modifier = Modifier
+                                .padding(24.dp)
+                                .verticalScroll(rememberScrollState()),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = if (currentState.isUpdate) "Update Contact" else "Add Contact",
-                                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = TextPrimary
+                                text = if (currentState.isUpdate) "Update Contact" else "Verify & Pair",
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.textPrimary
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            val action = if (currentState.isUpdate) "update" else "add"
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                text = "Do you want to $action ${currentState.payload.displayName}?",
+                                text = if (currentState.isUpdate) {
+                                    "Update encryption keys for ${currentState.payload.displayName}?"
+                                } else {
+                                    "Pair with ${currentState.payload.displayName}?"
+                                },
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary.copy(alpha = 0.8f),
+                                color = colors.textSecondary,
                                 textAlign = TextAlign.Center
                             )
-                            Spacer(modifier = Modifier.height(32.dp))
+
+                            if (currentState.identityKeyChanged) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                GlassSurface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    tint = colors.warning.copy(alpha = 0.14f),
+                                    borderColor = colors.warning.copy(alpha = 0.45f)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = null,
+                                            tint = colors.warning,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = "Encryption key changed since last pairing. Confirm only if they reset their identity.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colors.textPrimary
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (!currentState.fingerprint.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(14.dp))
+                                GlassSurface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = "VERIFICATION CODE",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = colors.accent
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = currentState.fingerprint,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Medium
+                                            ),
+                                            color = colors.textPrimary,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Verify this matches the code shown on ${currentState.payload.displayName}'s screen",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = colors.textSecondary,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(24.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 GlassButton(
                                     text = "Cancel",
                                     onClick = { viewModel.resetToScanning() },
-
                                     modifier = Modifier.weight(1f)
                                 )
                                 GlassButton(
                                     text = "Confirm",
                                     onClick = { viewModel.confirmAddContact(currentState.payload) },
-
                                     isPrimary = true,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -243,34 +372,36 @@ fun ScanContactScreen(
                     }
                 }
             }
-            
+
             is ScanContactState.Error -> {
                 Dialog(onDismissRequest = { viewModel.resetToScanning() }) {
                     GlassSurface(
-
-                        modifier = Modifier.fillMaxWidth().padding(16.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        tint = colors.dialogSurface,
+                        shape = RoundedCornerShape(20.dp)
                     ) {
                         Column(
                             modifier = Modifier.padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = "Error",
-                                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.error
+                                text = "Could not pair",
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = colors.error
                             )
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 text = currentState.message,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = TextPrimary.copy(alpha = 0.8f),
+                                color = colors.textSecondary,
                                 textAlign = TextAlign.Center
                             )
-                            Spacer(modifier = Modifier.height(32.dp))
+                            Spacer(modifier = Modifier.height(24.dp))
                             GlassButton(
                                 text = "Try Again",
                                 onClick = { viewModel.resetToScanning() },
-
                                 isPrimary = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -278,25 +409,52 @@ fun ScanContactScreen(
                     }
                 }
             }
-            
-            is ScanContactState.Success -> {
-                // Handled by LaunchedEffect
-            }
+
+            is ScanContactState.Success -> {}
         }
 
-        // The camera preview covers the whole screen, so the only way out is an overlay control.
-        IconButton(
-            onClick = onNavigateBack,
+        // Top overlay controls respecting status bar insets
+        Row(
             modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(8.dp)
-                .background(Black.copy(alpha = 0.5f), CircleShape)
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = TextPrimary
-            )
+            IconButton(
+                onClick = onNavigateBack,
+                modifier = Modifier.background(Black.copy(alpha = 0.55f), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = White
+                )
+            }
+
+            Surface(
+                onClick = onNavigateToMyQr,
+                shape = RoundedCornerShape(20.dp),
+                color = Black.copy(alpha = 0.55f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    QrCodeIcon(
+                        contentDescription = "Show my QR",
+                        tint = White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "My QR",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = White
+                    )
+                }
+            }
         }
     }
 }
@@ -304,33 +462,41 @@ fun ScanContactScreen(
 @Composable
 fun ManualEntrySection(onAddClicked: (String) -> Unit) {
     var manualCode by remember { mutableStateOf("") }
-    
-    GlassSurface(
+    val colors = LanmanTheme.colors
 
+    GlassSurface(
         modifier = Modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(16.dp),
-        shape = RoundedCornerShape(24.dp)
+        shape = RoundedCornerShape(20.dp),
+        tint = colors.surfaceElevated
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(24.dp),
+                .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("Manual Entry Fallback", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "Manual pairing code",
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.textPrimary
+            )
+            Spacer(modifier = Modifier.height(10.dp))
             GlassTextField(
                 value = manualCode,
                 onValueChange = { manualCode = it },
-                placeholder = "Paste Code",
-
+                placeholder = "Paste pairing code",
+                keyboardOptions = KeyboardOptions(
+                    autoCorrectEnabled = false,
+                    keyboardType = KeyboardType.Uri
+                )
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             GlassButton(
-                text = "Add Contact",
+                text = "Pair Contact",
                 onClick = { onAddClicked(manualCode) },
-
                 isPrimary = true,
                 enabled = manualCode.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()

@@ -2,6 +2,8 @@ package com.example.lanman.data.network
 
 import android.content.Context
 import android.util.Log
+import com.example.lanman.data.security.BlockedContactsStore
+import com.example.lanman.domain.model.FileTransfer
 import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
 import com.example.lanman.domain.model.MessageStatus
@@ -9,25 +11,28 @@ import com.example.lanman.domain.model.MessageType
 import com.example.lanman.domain.network.ConnectionManager
 import com.example.lanman.domain.network.FileTransferProgressTracker
 import com.example.lanman.domain.network.protocol.Frame
+import com.example.lanman.domain.repository.ContactRepository
 import com.example.lanman.domain.repository.FileTransferRepository
 import com.example.lanman.domain.repository.MessageRepository
 import com.example.lanman.domain.security.EncryptionEngine
 import com.example.lanman.domain.security.StreamingEncryption
+import com.example.lanman.util.network.NetworkConstants
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
-
-import com.example.lanman.util.network.NetworkConstants
 
 @Singleton
 class FileTransferReceiver @Inject constructor(
@@ -36,7 +41,9 @@ class FileTransferReceiver @Inject constructor(
     private val encryptionEngine: EncryptionEngine,
     private val messageRepository: MessageRepository,
     private val fileTransferRepository: FileTransferRepository,
-    private val progressTracker: FileTransferProgressTracker
+    private val progressTracker: FileTransferProgressTracker,
+    private val contactRepository: ContactRepository,
+    private val blockedContactsStore: BlockedContactsStore
 ) {
     private val TAG = "FileTransferReceiver"
     private var job: Job? = null
@@ -46,41 +53,56 @@ class FileTransferReceiver @Inject constructor(
         val contactId: String,
         val fileName: String,
         val fileSizeBytes: Long,
+        val expectedTotalChunks: Int,
         val mimeType: String,
         val aesKey: ByteArray,
         val baseNonce: ByteArray,
         val outputStream: BufferedOutputStream,
-        /** Hidden staging file that is only written while chunks are arriving. */
         val partialFile: File,
-        /** Final, openable path. Published to the DB only once the transfer is verified. */
         val finalFile: File,
         val senderTimestamp: Long,
+        val sha256: MessageDigest = MessageDigest.getInstance("SHA-256"),
+        var expectedChunkIndex: Int = 0,
         var bytesReceived: Long = 0,
-        /** Updated on every chunk; used by the watchdog to detect a vanished sender. */
+        var expectedSha256: ByteArray? = null,
         var lastActivityAt: Long = System.currentTimeMillis()
     )
 
+    private class EarlyFrameBuffer(
+        val contactId: String,
+        val createdAt: Long = System.currentTimeMillis(),
+        val chunks: MutableList<Frame.FileChunkFrame> = mutableListOf(),
+        var hashFrame: Frame.FileHashFrame? = null,
+        var completeFrame: Frame.FileCompleteFrame? = null,
+        var bufferedBytes: Int = 0
+    )
+
     private val activeTransfers = ConcurrentHashMap<String, ActiveTransferState>()
+    private val earlyBuffers = ConcurrentHashMap<String, EarlyFrameBuffer>()
 
     fun start(scope: CoroutineScope) {
         if (job != null) return
 
         job = scope.launch(Dispatchers.IO) {
-            // Anything left in the staging directory belongs to a previous process: the
-            // in-memory transfer state is gone, so those files can never be completed.
             sweepOrphanedPartials()
 
-            // Fails transfers whose sender stopped sending mid-stream.
             launch { monitorStalledTransfers() }
 
             connectionManager.incomingFrames.collect { event ->
-                val contactId = event.contactId
-                val frame = event.frame
-                when (frame) {
-                    is Frame.FileOfferFrame -> handleFileOffer(contactId, frame)
-                    is Frame.FileChunkFrame -> handleFileChunk(contactId, frame)
-                    is Frame.FileCompleteFrame -> handleFileComplete(contactId, frame)
-                    else -> {} // Handled by IncomingMessageReceiver or ignored
+                try {
+                    val contactId = event.contactId
+                    val frame = event.frame
+                    when (frame) {
+                        is Frame.FileOfferFrame -> handleFileOffer(contactId, frame)
+                        is Frame.FileChunkFrame -> handleFileChunk(contactId, frame)
+                        is Frame.FileHashFrame -> handleFileHash(contactId, frame)
+                        is Frame.FileCompleteFrame -> handleFileComplete(contactId, frame)
+                        else -> {}
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error processing incoming file transfer frame", e)
                 }
             }
         }
@@ -90,24 +112,41 @@ class FileTransferReceiver @Inject constructor(
         job?.cancel()
         job = null
 
-        // Close all open streams and discard the unfinished files
         activeTransfers.entries.forEach { (transferId, state) ->
             discardTransfer(transferId, state)
         }
         activeTransfers.clear()
+        earlyBuffers.clear()
     }
 
     private suspend fun handleFileOffer(contactId: String, frame: Frame.FileOfferFrame) {
-        // Decrypt envelope to get AES key and base nonce
+        if (blockedContactsStore.isBlocked(contactId)) {
+            Log.w(TAG, "Ignoring file offer from blocked contact")
+            earlyBuffers.remove(frame.fileTransferId)
+            return
+        }
+        if (contactRepository.getContactById(contactId).firstOrNull() == null) {
+            Log.w(TAG, "Ignoring file offer from unknown/unpaired contact")
+            earlyBuffers.remove(frame.fileTransferId)
+            return
+        }
+        if (frame.fileSizeBytes < 0L || frame.fileSizeBytes > MAX_FILE_SIZE_BYTES) {
+            Log.w(TAG, "Rejecting file offer with invalid byte count: ${frame.fileSizeBytes}")
+            earlyBuffers.remove(frame.fileTransferId)
+            return
+        }
+
         val decryptResult = encryptionEngine.decrypt(contactId, frame.encryptedKeyEnvelope)
         if (decryptResult.isFailure) {
             Log.e(TAG, "Failed to decrypt FileOffer envelope for transfer ${frame.fileTransferId}", decryptResult.exceptionOrNull())
+            earlyBuffers.remove(frame.fileTransferId)
             return
         }
 
         val keyAndNonce = decryptResult.getOrThrow()
         if (keyAndNonce.size != 44) {
             Log.e(TAG, "Decrypted envelope length is not 44 bytes, it is ${keyAndNonce.size}")
+            earlyBuffers.remove(frame.fileTransferId)
             return
         }
 
@@ -117,22 +156,24 @@ class FileTransferReceiver @Inject constructor(
         val receivedDir = File(context.filesDir, "received_files")
         if (!receivedDir.exists()) receivedDir.mkdirs()
 
-        // Never write to the peer-supplied name directly: two transfers can share a name
-        // (every voice note is "Voice Message"), and a name can contain path separators.
+        if (frame.fileSizeBytes > 0 && receivedDir.usableSpace < frame.fileSizeBytes + MIN_FREE_SPACE_BYTES) {
+            Log.e(TAG, "Insufficient disk space for transfer ${frame.fileTransferId}")
+            earlyBuffers.remove(frame.fileTransferId)
+            return
+        }
+
         val displayName = safeDisplayName(frame.fileName)
         val finalFile = uniqueDestination(receivedDir, frame.fileTransferId, frame.fileName)
 
-        // The sender keeps retrying until it sees an ACK, so the same offer can arrive again
-        // after we already finished. Re-acknowledge it instead of re-downloading (and
-        // briefly truncating) a file that is already complete on disk.
-        if (frame.fileSizeBytes > 0 &&
+        // If already delivered and verified on disk, re-acknowledge idempotently.
+        val existingMessage = messageRepository.getMessageById(frame.messageId)
+        if (existingMessage != null &&
+            existingMessage.status != MessageStatus.FAILED &&
             finalFile.isFile &&
-            finalFile.length() == frame.fileSizeBytes &&
-            messageRepository.getMessageById(frame.messageId) != null
+            (frame.fileSizeBytes == 0L || finalFile.length() == frame.fileSizeBytes)
         ) {
             Log.d(TAG, "Transfer ${frame.fileTransferId} already complete, re-acknowledging")
-            // The DB row may have lost its path (or the ACK was lost before it was written),
-            // so restore the openable location before announcing delivery again.
+            earlyBuffers.remove(frame.fileTransferId)
             fileTransferRepository.updateLocalUri(frame.fileTransferId, finalFile.absolutePath)
             sendAck(contactId, frame.messageId)
             messageRepository.updateMessageStatus(frame.messageId, MessageStatus.DELIVERED)
@@ -140,7 +181,6 @@ class FileTransferReceiver @Inject constructor(
             return
         }
 
-        // A repeated offer for a still-running transfer replaces the old attempt.
         activeTransfers.remove(frame.fileTransferId)?.let { discardTransfer(frame.fileTransferId, it) }
 
         val partialDir = File(receivedDir, PARTIAL_DIR_NAME)
@@ -151,11 +191,12 @@ class FileTransferReceiver @Inject constructor(
 
         val outputStream = BufferedOutputStream(FileOutputStream(partialFile), NetworkConstants.FILE_STREAM_BUFFER_SIZE)
 
-        activeTransfers[frame.fileTransferId] = ActiveTransferState(
+        val newState = ActiveTransferState(
             messageId = frame.messageId,
             contactId = contactId,
             fileName = displayName,
             fileSizeBytes = frame.fileSizeBytes,
+            expectedTotalChunks = frame.totalChunks,
             mimeType = frame.mimeType,
             aesKey = aesKey,
             baseNonce = baseNonce,
@@ -164,18 +205,18 @@ class FileTransferReceiver @Inject constructor(
             finalFile = finalFile,
             senderTimestamp = frame.senderTimestamp
         )
+        activeTransfers[frame.fileTransferId] = newState
 
         val isVoice = frame.mimeType.startsWith("audio/lanman-voice")
         val messageType = if (isVoice) MessageType.VOICE else MessageType.FILE
 
-        var messageContent = "File: $displayName".toByteArray(Charsets.UTF_8)
-        if (isVoice) {
-            // Extract duration from "audio/lanman-voice;duration=12400"
+        val messageContent = if (isVoice) {
             val durationMs = frame.mimeType.substringAfter("duration=", "0")
-            messageContent = "voice:$durationMs".toByteArray(Charsets.UTF_8)
+            "voice:$durationMs".toByteArray(Charsets.UTF_8)
+        } else {
+            "File: $displayName".toByteArray(Charsets.UTF_8)
         }
 
-        // Insert PENDING message so UI can show progress circle
         val message = Message(
             id = frame.messageId,
             contactId = contactId,
@@ -186,9 +227,7 @@ class FileTransferReceiver @Inject constructor(
             timestamp = frame.senderTimestamp
         )
 
-        // localUri stays empty until the file is verified and moved into place, so nothing
-        // (UI, share sheet, Coil) can open a half-written file.
-        val fileTransfer = com.example.lanman.domain.model.FileTransfer(
+        val fileTransfer = FileTransfer(
             id = frame.fileTransferId,
             messageId = frame.messageId,
             fileName = displayName,
@@ -201,33 +240,117 @@ class FileTransferReceiver @Inject constructor(
         messageRepository.insertMessage(message)
         fileTransferRepository.insertFileTransfer(fileTransfer)
 
-        Log.d(TAG, "Started receiving file transfer ${frame.fileTransferId}: ${frame.fileName}")
+        Log.d(TAG, "Started receiving file transfer ${frame.fileTransferId}: $displayName")
+
+        // Replay any early chunks that raced ahead of FileOfferFrame on the dual-channel transport.
+        val early = earlyBuffers.remove(frame.fileTransferId)
+        if (early != null && early.contactId == contactId) {
+            early.chunks.sortedBy { it.chunkIndex }.forEach { chunk ->
+                if (activeTransfers.containsKey(frame.fileTransferId)) {
+                    handleFileChunk(contactId, chunk)
+                }
+            }
+            early.hashFrame?.let { hash ->
+                if (activeTransfers.containsKey(frame.fileTransferId)) {
+                    handleFileHash(contactId, hash)
+                }
+            }
+            early.completeFrame?.let { complete ->
+                if (activeTransfers.containsKey(frame.fileTransferId)) {
+                    handleFileComplete(contactId, complete)
+                }
+            }
+        }
     }
 
     private suspend fun handleFileChunk(contactId: String, frame: Frame.FileChunkFrame) {
         val state = activeTransfers[frame.fileTransferId]
         if (state == null) {
+            // Stage briefly in case FileOfferFrame on Control socket arrives right behind Data socket chunk 0.
+            if (!blockedContactsStore.isBlocked(contactId) &&
+                contactRepository.getContactById(contactId).firstOrNull() != null
+            ) {
+                val early = earlyBuffers.computeIfAbsent(frame.fileTransferId) { EarlyFrameBuffer(contactId) }
+                if (early.contactId == contactId &&
+                    early.bufferedBytes + frame.data.size <= MAX_EARLY_BUFFER_BYTES &&
+                    early.chunks.size < MAX_EARLY_CHUNKS
+                ) {
+                    early.chunks.add(frame)
+                    early.bufferedBytes += frame.data.size
+                    return
+                }
+            }
             Log.w(TAG, "Received chunk for unknown transfer ${frame.fileTransferId}")
+            return
+        }
+
+        if (state.contactId != contactId) {
+            Log.w(TAG, "Rejected chunk from mismatched contact for transfer ${frame.fileTransferId}")
+            return
+        }
+
+        if (frame.chunkIndex != state.expectedChunkIndex) {
+            Log.e(
+                TAG,
+                "Out-of-order/duplicate chunk ${frame.chunkIndex} (expected ${state.expectedChunkIndex}) for ${frame.fileTransferId}"
+            )
+            activeTransfers.remove(frame.fileTransferId)?.let { failTransfer(frame.fileTransferId, it) }
             return
         }
 
         try {
             val plaintext = StreamingEncryption.decryptChunk(frame.data, frame.chunkIndex, state.aesKey, state.baseNonce)
-            state.outputStream.write(plaintext)
+            if (state.fileSizeBytes > 0 && state.bytesReceived + plaintext.size > state.fileSizeBytes) {
+                Log.e(TAG, "Transfer ${frame.fileTransferId} exceeded declared size (${state.fileSizeBytes})")
+                activeTransfers.remove(frame.fileTransferId)?.let { failTransfer(frame.fileTransferId, it) }
+                return
+            }
 
+            state.outputStream.write(plaintext)
+            state.sha256.update(plaintext)
+            state.expectedChunkIndex++
             state.bytesReceived += plaintext.size
             state.lastActivityAt = System.currentTimeMillis()
-            progressTracker.updateProgress(frame.fileTransferId, state.bytesReceived, state.fileSizeBytes)
+            progressTracker.updateProgress(
+                frame.fileTransferId,
+                state.bytesReceived,
+                state.fileSizeBytes.coerceAtLeast(state.bytesReceived)
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decrypt/write chunk ${frame.chunkIndex} for transfer ${frame.fileTransferId}", e)
             activeTransfers.remove(frame.fileTransferId)?.let { failTransfer(frame.fileTransferId, it) }
         }
     }
 
+    private fun handleFileHash(contactId: String, frame: Frame.FileHashFrame) {
+        val state = activeTransfers[frame.fileTransferId]
+        if (state == null) {
+            val early = earlyBuffers[frame.fileTransferId]
+            if (early != null && early.contactId == contactId) {
+                early.hashFrame = frame
+            }
+            return
+        }
+        if (state.contactId != contactId) return
+        state.expectedSha256 = frame.sha256
+        state.lastActivityAt = System.currentTimeMillis()
+    }
+
     private suspend fun handleFileComplete(contactId: String, frame: Frame.FileCompleteFrame) {
         val state = activeTransfers.remove(frame.fileTransferId)
         if (state == null) {
+            val early = earlyBuffers[frame.fileTransferId]
+            if (early != null && early.contactId == contactId) {
+                early.completeFrame = frame
+                return
+            }
             Log.w(TAG, "Received complete for unknown transfer ${frame.fileTransferId}")
+            return
+        }
+
+        if (state.contactId != contactId) {
+            Log.w(TAG, "Rejected FileComplete from mismatched contact for ${frame.fileTransferId}")
+            failTransfer(frame.fileTransferId, state)
             return
         }
 
@@ -235,24 +358,38 @@ class FileTransferReceiver @Inject constructor(
             state.outputStream.flush()
             state.outputStream.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to flush transfer ${frame.fileTransferId}, discarding partial file", e)
+            Log.e(TAG, "Failed to flush transfer ${frame.fileTransferId}", e)
             failTransfer(frame.fileTransferId, state)
             return
         }
 
-        // Verify size when the sender declared one (0 means unknown, e.g. a provider that
-        // does not report OpenableColumns.SIZE). Chunks and this frame share one ordered
-        // stream, so reaching this point already means every chunk was written.
-        val receivedBytes = state.partialFile.length()
-        if (state.fileSizeBytes > 0 && receivedBytes != state.fileSizeBytes) {
-            Log.w(TAG, "File size mismatch for transfer ${frame.fileTransferId}. Expected ${state.fileSizeBytes}, got $receivedBytes")
+        if (state.expectedTotalChunks > 0 && state.expectedChunkIndex != state.expectedTotalChunks) {
+            Log.w(
+                TAG,
+                "Chunk count mismatch for ${frame.fileTransferId}: expected ${state.expectedTotalChunks}, got ${state.expectedChunkIndex}"
+            )
             failTransfer(frame.fileTransferId, state)
             return
+        }
+
+        val receivedBytes = state.partialFile.length()
+        if (state.fileSizeBytes > 0 && receivedBytes != state.fileSizeBytes) {
+            Log.w(TAG, "File size mismatch for ${frame.fileTransferId}. Expected ${state.fileSizeBytes}, got $receivedBytes")
+            failTransfer(frame.fileTransferId, state)
+            return
+        }
+
+        val expectedHash = state.expectedSha256
+        if (expectedHash != null) {
+            val actualHash = state.sha256.digest()
+            if (!actualHash.contentEquals(expectedHash)) {
+                Log.e(TAG, "SHA-256 integrity verification failed for ${frame.fileTransferId}")
+                failTransfer(frame.fileTransferId, state)
+                return
+            }
         }
 
         try {
-            // Move the finished file into place atomically: the final name only ever exists
-            // once the content is complete, so a tap can never open a partial file.
             val finalFile = state.finalFile
             if (finalFile.parentFile?.exists() == false) finalFile.parentFile?.mkdirs()
             if (finalFile.exists()) finalFile.delete()
@@ -262,18 +399,11 @@ class FileTransferReceiver @Inject constructor(
                 state.partialFile.delete()
             }
 
-            // Publish the openable path before announcing delivery.
             fileTransferRepository.updateLocalUri(frame.fileTransferId, finalFile.absolutePath)
-
-            // Send ACK back for the whole file
             sendAck(contactId, state.messageId)
-
-            // Mark message as DELIVERED
             messageRepository.updateMessageStatus(state.messageId, MessageStatus.DELIVERED)
-
             progressTracker.clearProgress(frame.fileTransferId)
-            Log.d(TAG, "Successfully received and persisted complete file transfer ${frame.fileTransferId}")
-
+            Log.d(TAG, "Successfully received and verified complete file transfer ${frame.fileTransferId}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to complete transfer ${frame.fileTransferId}", e)
             failTransfer(frame.fileTransferId, state)
@@ -283,11 +413,10 @@ class FileTransferReceiver @Inject constructor(
     private suspend fun sendAck(contactId: String, messageId: String) {
         val result = connectionManager.sendFrame(contactId, Frame.AckFrame(messageId))
         if (result.isFailure) {
-            Log.w(TAG, "Failed to send ACK for $messageId to $contactId", result.exceptionOrNull())
+            Log.w(TAG, "Failed to send ACK for $messageId", result.exceptionOrNull())
         }
     }
 
-    /** Strip any directory components and control characters from a peer-supplied name. */
     private fun safeDisplayName(originalName: String): String {
         return originalName
             .substringAfterLast('/')
@@ -298,7 +427,6 @@ class FileTransferReceiver @Inject constructor(
             .ifBlank { "file" }
     }
 
-    /** Unique, sanitized on-disk destination so transfers never overwrite each other. */
     private fun uniqueDestination(receivedDir: File, transferId: String, originalName: String): File {
         val extension = safeDisplayName(originalName)
             .substringAfterLast('.', "")
@@ -312,16 +440,12 @@ class FileTransferReceiver @Inject constructor(
         if (!partialDir.isDirectory) return
 
         partialDir.listFiles()?.forEach { file ->
-            if (file.isFile && file.delete()) {
-                Log.d(TAG, "Deleted orphaned partial transfer ${file.name}")
+            if (file.isFile) {
+                file.delete()
             }
         }
     }
 
-    /**
-     * Terminal failure: drop the incomplete file and stop the progress UI. The row is kept so
-     * the card can show "failed" instead of spinning forever; a retried offer resets it.
-     */
     private suspend fun failTransfer(transferId: String, state: ActiveTransferState) {
         discardTransfer(transferId, state)
         messageRepository.updateMessageStatusIfCurrent(
@@ -331,10 +455,6 @@ class FileTransferReceiver @Inject constructor(
         )
     }
 
-    /**
-     * Watchdog for a sender that disappears mid-transfer: no chunks means no frames to react
-     * to, so without this the card would show a frozen progress ring indefinitely.
-     */
     private suspend fun CoroutineScope.monitorStalledTransfers() {
         while (isActive) {
             delay(STALL_CHECK_INTERVAL_MS)
@@ -343,31 +463,38 @@ class FileTransferReceiver @Inject constructor(
                 val idleMs = now - state.lastActivityAt
                 if (idleMs <= STALL_TIMEOUT_MS) return@forEach
                 if (!activeTransfers.remove(transferId, state)) return@forEach
-                Log.w(TAG, "Transfer $transferId stalled for ${idleMs} ms; marking as failed")
+                Log.w(TAG, "Transfer $transferId stalled for $idleMs ms; marking as failed")
                 failTransfer(transferId, state)
+            }
+            earlyBuffers.entries.forEach { (transferId, early) ->
+                if (now - early.createdAt > EARLY_BUFFER_TIMEOUT_MS) {
+                    earlyBuffers.remove(transferId, early)
+                }
             }
         }
     }
 
     private fun discardTransfer(transferId: String, state: ActiveTransferState) {
-        try { state.outputStream.close() } catch (e: Exception) {}
-        try { if (state.partialFile.exists()) state.partialFile.delete() } catch (e: Exception) {}
+        try { state.outputStream.close() } catch (_: Exception) {}
+        try { if (state.partialFile.exists()) state.partialFile.delete() } catch (_: Exception) {}
         progressTracker.clearProgress(transferId)
     }
 
     fun cancelTransfersForContact(contactId: String) {
-        // The contact is gone: drop the files without flagging them as failed transfers.
         activeTransfers.filterValues { it.contactId == contactId }.keys.forEach { transferId ->
             activeTransfers.remove(transferId)?.let { discardTransfer(transferId, it) }
         }
+        earlyBuffers.filterValues { it.contactId == contactId }.keys.forEach { earlyBuffers.remove(it) }
     }
 
     private companion object {
-        /** Hidden staging directory; files here are never openable or shared. */
         const val PARTIAL_DIR_NAME = ".incomplete"
-
-        /** No chunk for this long means the sender is gone. */
-        const val STALL_TIMEOUT_MS = 20_000L
+        const val STALL_TIMEOUT_MS = 25_000L
         const val STALL_CHECK_INTERVAL_MS = 5_000L
+        const val EARLY_BUFFER_TIMEOUT_MS = 5_000L
+        const val MAX_EARLY_BUFFER_BYTES = 4 * 1024 * 1024 // 4 MB cap
+        const val MAX_EARLY_CHUNKS = 8
+        const val MAX_FILE_SIZE_BYTES = 2L * 1024L * 1024L * 1024L
+        const val MIN_FREE_SPACE_BYTES = 50L * 1024L * 1024L
     }
 }

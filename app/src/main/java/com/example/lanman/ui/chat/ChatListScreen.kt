@@ -1,5 +1,6 @@
 package com.example.lanman.ui.chat
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,19 +14,23 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.lanman.data.engine.RadarService
 import com.example.lanman.domain.model.ChatListContact
 import com.example.lanman.ui.common.AppIcons
 import com.example.lanman.ui.common.ContactAvatar
@@ -38,17 +43,19 @@ import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.QrCodeIcon
 import com.example.lanman.ui.common.contentWidth
 import com.example.lanman.ui.common.pressable
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 import java.nio.charset.StandardCharsets
-import java.text.SimpleDateFormat
-import java.util.*
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatListScreen(
-    onNavigateToQr: () -> Unit,
+    onNavigateToMyQr: () -> Unit,
+    onNavigateToScanQr: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToConversation: (String) -> Unit,
     onNavigateToMessageRequests: () -> Unit,
@@ -58,6 +65,11 @@ fun ChatListScreen(
     val chatList by viewModel.chatList.collectAsStateWithLifecycle()
     val requestCount by viewModel.messageRequestCount.collectAsStateWithLifecycle()
     val mutedIds by viewModel.mutedIds.collectAsStateWithLifecycle()
+    val networkState by viewModel.networkState.collectAsStateWithLifecycle()
+    val isEngineRunning by viewModel.isEngineRunning.collectAsStateWithLifecycle()
+
+    val colors = LanmanTheme.colors
+    val context = LocalContext.current
 
     var query by remember { mutableStateOf("") }
     var actionTarget by remember { mutableStateOf<ChatListContact?>(null) }
@@ -71,26 +83,39 @@ fun ChatListScreen(
         }
     }
 
+    val onlineCount = remember(chatList) { chatList.count { it.isOnline } }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             LanmanTopBar(
                 title = "Messages",
+                subtitle = when {
+                    !isEngineRunning -> "Local discovery paused"
+                    !networkState.isWifiConnected -> "No local Wi-Fi connection"
+                    onlineCount > 0 -> "$onlineCount nearby on Wi-Fi"
+                    else -> "Listening on local Wi-Fi"
+                },
+                subtitleColor = when {
+                    !networkState.isWifiConnected || !isEngineRunning -> colors.warning
+                    onlineCount > 0 -> colors.accent
+                    else -> colors.textSecondary
+                },
                 actions = {
-                    IconButton(onClick = onNavigateToQr) {
+                    IconButton(onClick = onNavigateToMyQr) {
                         QrCodeIcon(
-                            contentDescription = "Scan a contact QR code",
-                            tint = TextPrimary
+                            contentDescription = "Show my QR code",
+                            tint = colors.textPrimary
                         )
                     }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(
                             imageVector = Icons.Default.Settings,
                             contentDescription = "Settings",
-                            tint = TextPrimary
+                            tint = colors.textPrimary
                         )
                     }
                 }
@@ -98,40 +123,91 @@ fun ChatListScreen(
 
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(modifier = Modifier.contentWidth().fillMaxHeight()) {
+                    if (!networkState.isWifiConnected || !isEngineRunning) {
+                        GlassSurface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                                .then(
+                                    if (!isEngineRunning) {
+                                        Modifier.pressable {
+                                            runCatching {
+                                                ContextCompat.startForegroundService(
+                                                    context,
+                                                    Intent(context, RadarService::class.java)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Modifier.pressable { viewModel.refreshDiscovery() }
+                                    }
+                                ),
+                            shape = RoundedCornerShape(14.dp),
+                            tint = colors.warning.copy(alpha = 0.12f),
+                            borderColor = colors.warning.copy(alpha = 0.35f)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = colors.warning,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = if (!isEngineRunning) {
+                                        "Local discovery is paused. Tap to resume."
+                                    } else {
+                                        "Connect to a local Wi-Fi network to send and discover peers."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.textPrimary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+
                     GlassTextField(
                         value = query,
                         onValueChange = { query = it },
                         placeholder = "Search conversations",
                         leadingIcon = Icons.Default.Search,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
 
                     if (requestCount > 0) {
                         GlassSurface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
                                 .pressable { onNavigateToMessageRequests() },
                             shape = RoundedCornerShape(16.dp),
-                            tint = ElectricCyan.copy(alpha = 0.12f)
+                            tint = colors.accentTint,
+                            borderColor = colors.borderActive
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(16.dp),
+                                    .padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
                                     modifier = Modifier
                                         .size(36.dp)
                                         .clip(CircleShape)
-                                        .background(ElectricCyan.copy(alpha = 0.18f)),
+                                        .background(colors.accent.copy(alpha = 0.18f)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Person,
                                         contentDescription = null,
-                                        tint = ElectricCyan,
+                                        tint = colors.accent,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }
@@ -139,13 +215,13 @@ fun ChatListScreen(
                                 Text(
                                     text = "$requestCount Message Request${if (requestCount > 1) "s" else ""}",
                                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                    color = TextPrimary,
+                                    color = colors.textPrimary,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     contentDescription = null,
-                                    tint = ElectricCyan
+                                    tint = colors.accent
                                 )
                             }
                         }
@@ -160,9 +236,9 @@ fun ChatListScreen(
                                 EmptyState(
                                     icon = AppIcons.Chat,
                                     title = "No conversations yet",
-                                    message = "Pair with someone on your network by scanning their QR code.",
-                                    actionLabel = "Scan a code",
-                                    onAction = onNavigateToQr
+                                    message = "Pair with someone on the same Wi-Fi by scanning their QR code.",
+                                    actionLabel = "Scan QR Code",
+                                    onAction = onNavigateToScanQr
                                 )
                             } else {
                                 EmptyState(
@@ -182,7 +258,8 @@ fun ChatListScreen(
                                     item = item,
                                     isMuted = item.contact.id in mutedIds,
                                     onClick = { onNavigateToConversation(item.contact.id) },
-                                    onLongClick = { actionTarget = item }
+                                    onLongClick = { actionTarget = item },
+                                    modifier = Modifier.animateItem()
                                 )
                             }
                         }
@@ -191,8 +268,8 @@ fun ChatListScreen(
 
                 FloatingActionButton(
                     onClick = onNavigateToNewChat,
-                    containerColor = ElectricCyan,
-                    contentColor = Color.Black,
+                    containerColor = colors.accent,
+                    contentColor = colors.onAccent,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(24.dp)
@@ -206,13 +283,13 @@ fun ChatListScreen(
     actionTarget?.let { target ->
         ModalBottomSheet(
             onDismissRequest = { actionTarget = null },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            containerColor = colors.surfaceElevated
         ) {
             Column(modifier = Modifier.padding(bottom = 24.dp)) {
                 Text(
                     text = target.contact.displayName,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = TextPrimary,
+                    color = colors.textPrimary,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                 )
                 SheetAction(
@@ -234,7 +311,7 @@ fun ChatListScreen(
                 SheetAction(
                     icon = Icons.Default.Delete,
                     label = "Delete chat",
-                    tint = MaterialTheme.colorScheme.error,
+                    tint = colors.error,
                     onClick = {
                         deleteTarget = target
                         actionTarget = null
@@ -268,7 +345,7 @@ private fun SheetAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit,
-    tint: Color = TextPrimary
+    tint: Color = LanmanTheme.colors.textPrimary
 ) {
     Row(
         modifier = Modifier
@@ -288,10 +365,12 @@ fun ChatListRow(
     item: ChatListContact,
     isMuted: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit = {}
+    onLongClick: () -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
+    val colors = LanmanTheme.colors
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .pressable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -312,16 +391,15 @@ fun ChatListRow(
             Text(
                 text = item.contact.displayName,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = TextPrimary,
+                color = colors.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(3.dp))
-
             Text(
                 text = previewTextOf(item),
                 style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
+                color = colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -329,12 +407,11 @@ fun ChatListRow(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Time on the same baseline as the name, unread count beneath it.
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.Top) {
             Text(
                 text = formatTimestamp(item.lastMessageTimestamp ?: item.contact.addedAt),
                 style = MaterialTheme.typography.labelSmall,
-                color = TextSecondary
+                color = colors.textSecondary
             )
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -344,7 +421,7 @@ fun ChatListRow(
                     Icon(
                         imageVector = AppIcons.VolumeOff,
                         contentDescription = "Muted",
-                        tint = TextSecondary,
+                        tint = colors.textSecondary,
                         modifier = Modifier.size(16.dp)
                     )
                 }
@@ -352,9 +429,11 @@ fun ChatListRow(
                     if (isMuted) Spacer(modifier = Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
-                            .size(20.dp)
+                            .height(22.dp)
+                            .widthIn(min = 22.dp)
                             .clip(CircleShape)
-                            .background(ElectricCyan)
+                            .background(colors.accent)
+                            .padding(horizontal = 6.dp)
                             .semantics {
                                 contentDescription = "${item.unreadCount} unread messages"
                             },
@@ -363,7 +442,7 @@ fun ChatListRow(
                         Text(
                             text = if (item.unreadCount > 99) "99+" else item.unreadCount.toString(),
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = Color.Black
+                            color = colors.onAccent
                         )
                     }
                 }
@@ -380,18 +459,16 @@ private fun previewTextOf(item: ChatListContact): String {
             raw.startsWith("File: ") -> "File \u00B7 ${raw.removePrefix("File: ")}"
             else -> raw
         }
-    } ?: "Say hello"
+    } ?: "Tap to start messaging"
 }
 
 private fun formatTimestamp(timestamp: Long): String {
-    val date = Date(timestamp)
-    val now = Date()
-
-    val format = if (date.date == now.date && date.month == now.month && date.year == now.year) {
-        SimpleDateFormat("HH:mm", Locale.getDefault())
+    val zone = ZoneId.systemDefault()
+    val dateTime = Instant.ofEpochMilli(timestamp).atZone(zone)
+    val today = LocalDate.now(zone)
+    return if (dateTime.toLocalDate() == today) {
+        dateTime.format(DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()))
     } else {
-        SimpleDateFormat("MMM dd", Locale.getDefault())
+        dateTime.format(DateTimeFormatter.ofPattern("MMM dd", Locale.getDefault()))
     }
-
-    return format.format(date)
 }

@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.lanman.data.network.MessageDispatcher
 import com.example.lanman.domain.model.ContactPresence
 import com.example.lanman.domain.model.Message
 import com.example.lanman.domain.model.MessageDirection
@@ -42,32 +43,39 @@ class ConversationViewModel @Inject constructor(
     private val presenceTracker: PresenceTracker,
     private val progressTracker: FileTransferProgressTracker,
     private val activeConversationTracker: ActiveConversationTracker,
+    private val messageDispatcher: MessageDispatcher,
     private val sendMessageUseCase: SendMessageUseCase,
     private val sendFileUseCase: SendFileUseCase,
     private val sendVoiceMessageUseCase: SendVoiceMessageUseCase,
     private val markMessageReadUseCase: MarkMessageReadUseCase
 ) : ViewModel() {
 
-    private val contactId: String = checkNotNull(savedStateHandle["contactId"])
+    val contactId: String = checkNotNull(savedStateHandle["contactId"])
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val messages: StateFlow<List<MessageUiModel>> = messageRepository.getMessagesForContact(contactId)
         .flatMapLatest { msgs ->
             val fileMessageIds = msgs.filter { it.type == MessageType.FILE || it.type == MessageType.VOICE }.map { it.id }
             if (fileMessageIds.isEmpty()) {
-                kotlinx.coroutines.flow.combine(kotlinx.coroutines.flow.flowOf(emptyList<com.example.lanman.domain.model.FileTransfer>()), progressTracker.progressMap) { _, _ ->
-                    msgs.map { MessageUiModel(it, null, null) }
+                kotlinx.coroutines.flow.combine(
+                    kotlinx.coroutines.flow.flowOf(emptyList<com.example.lanman.domain.model.FileTransfer>()),
+                    progressTracker.metricsMap
+                ) { _, _ ->
+                    msgs.map { MessageUiModel(it, null, null, null) }
                 }
             } else {
-                kotlinx.coroutines.flow.combine(fileTransferRepository.getByMessageIds(fileMessageIds), progressTracker.progressMap) { transfers, progressMap ->
+                kotlinx.coroutines.flow.combine(
+                    fileTransferRepository.getByMessageIds(fileMessageIds),
+                    progressTracker.metricsMap
+                ) { transfers, metricsMap ->
                     val transferMap = transfers.associateBy { it.messageId }
                     msgs.map { msg ->
                         if (msg.type == MessageType.FILE || msg.type == MessageType.VOICE) {
                             val transfer = transferMap[msg.id]
-                            val progress = transfer?.let { progressMap[it.id] }
-                            MessageUiModel(msg, transfer, progress)
+                            val metrics = transfer?.let { metricsMap[it.id] }
+                            MessageUiModel(msg, transfer, metrics?.progress, metrics)
                         } else {
-                            MessageUiModel(msg, null, null)
+                            MessageUiModel(msg, null, null, null)
                         }
                     }
                 }
@@ -142,6 +150,7 @@ class ConversationViewModel @Inject constructor(
     /** Stops an outgoing transfer and marks it failed so the user can retry it later. */
     fun cancelTransfer(messageId: String, transferId: String?) {
         viewModelScope.launch {
+            messageDispatcher.cancelTransfer(messageId)
             messageRepository.updateMessageStatus(messageId, MessageStatus.FAILED)
             transferId?.let { progressTracker.clearProgress(it) }
         }

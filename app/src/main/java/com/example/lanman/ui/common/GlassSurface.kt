@@ -12,20 +12,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
-import com.example.lanman.ui.theme.GlassBorder
-import com.example.lanman.ui.theme.GlassSurfaceTint
+import com.example.lanman.ui.theme.LanmanTheme
 
 /**
- * A reusable frosted glass container: a low-alpha tint plus a hairline border.
- *
- * The effect is deliberately flat rather than a blurred backdrop — the haze blur pipeline was
- * dropped from the project, so this is the single glass surface every screen uses.
+ * Reusable Translucent Monolith container: subtle low-alpha tint in dark mode, clean card in
+ * light mode, paired with a crisp hairline border.
  */
 @Composable
 fun GlassSurface(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(16.dp),
-    tint: Color = GlassSurfaceTint,
+    tint: Color = LanmanTheme.colors.surfaceGlass,
+    borderColor: Color = LanmanTheme.colors.border,
     contentAlignment: Alignment = Alignment.TopStart,
     content: @Composable BoxScope.() -> Unit
 ) {
@@ -33,7 +31,7 @@ fun GlassSurface(
         modifier = modifier
             .clip(shape)
             .background(tint)
-            .border(1.dp, GlassBorder, shape),
+            .border(1.dp, borderColor, shape),
         contentAlignment = contentAlignment,
         content = content
     )

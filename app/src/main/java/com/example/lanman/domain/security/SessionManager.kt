@@ -1,15 +1,21 @@
 package com.example.lanman.domain.security
 
-import android.util.Base64
 import android.util.Log
 import com.example.lanman.data.security.SignalStoreImpl
 import com.example.lanman.domain.repository.ContactRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
-import org.json.JSONObject
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.SignalProtocolAddress
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.state.PreKeyBundle
+import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -20,13 +26,13 @@ class SessionManager @Inject constructor(
 ) {
     private val TAG = "SessionManager"
 
-    suspend fun establishSession(contactId: String) {
+    suspend fun establishSession(contactId: String) = withContext(Dispatchers.IO) {
         val address = SignalProtocolAddress(contactId, 1) // Default device ID 1 for now
 
         // Check if session already exists
         if (signalStore.containsSession(address)) {
             Log.d(TAG, "Session already established for $contactId")
-            return
+            return@withContext
         }
 
         val contact = contactRepository.getContactById(contactId).firstOrNull() 
@@ -35,10 +41,11 @@ class SessionManager @Inject constructor(
         val bundleBytes = contact.publicKeyBundle 
             ?: throw IllegalStateException("Contact $contactId has no public key bundle")
 
-        val json = JSONObject(String(bundleBytes, Charsets.UTF_8))
-        
-        val identityKeyBase64 = json.getString("identityKey")
-        val identityKeyBytes = Base64.decode(identityKeyBase64, Base64.NO_WRAP)
+        val json = Json.parseToJsonElement(String(bundleBytes, Charsets.UTF_8)).jsonObject
+
+        val identityKeyBase64 = json["identityKey"]?.jsonPrimitive?.contentOrNull
+            ?: throw IllegalArgumentException("Missing identityKey in contact bundle")
+        val identityKeyBytes = Base64.getDecoder().decode(identityKeyBase64)
         val identityKey = IdentityKey(identityKeyBytes, 0)
 
         // Trust-On-First-Use (TOFU) validation
@@ -46,8 +53,8 @@ class SessionManager @Inject constructor(
         // Since we extract it directly from the contact record that was populated via QR, 
         // we inherently trust what's currently in the DB.
         
-        val registrationId = json.optInt("registrationId", -1)
-        val deviceId = json.optInt("deviceId", -1)
+        val registrationId = json["registrationId"]?.jsonPrimitive?.intOrNull ?: -1
+        val deviceId = json["deviceId"]?.jsonPrimitive?.intOrNull ?: -1
         
         if (registrationId <= 0 || registrationId > 16383) {
             throw IllegalArgumentException("Invalid or missing registrationId in contact bundle")
@@ -56,16 +63,18 @@ class SessionManager @Inject constructor(
             throw IllegalArgumentException("Invalid or missing deviceId in contact bundle")
         }
 
-        if (!json.has("signedPreKeyId") || !json.has("signedPreKey") || !json.has("signedPreKeySignature")) {
+        val signedPreKeyId = json["signedPreKeyId"]?.jsonPrimitive?.intOrNull
+        val signedPreKeyStr = json["signedPreKey"]?.jsonPrimitive?.contentOrNull
+        val signedPreKeySignatureStr = json["signedPreKeySignature"]?.jsonPrimitive?.contentOrNull
+        if (signedPreKeyId == null || signedPreKeyStr == null || signedPreKeySignatureStr == null) {
             throw IllegalArgumentException("Missing signed prekey information in contact bundle")
         }
-        val signedPreKeyId = json.getInt("signedPreKeyId")
         if (signedPreKeyId < 0) {
             throw IllegalArgumentException("Invalid signedPreKeyId in contact bundle")
         }
         
-        val signedPreKeyBytes = Base64.decode(json.getString("signedPreKey"), Base64.NO_WRAP)
-        val signedPreKeySignature = Base64.decode(json.getString("signedPreKeySignature"), Base64.NO_WRAP)
+        val signedPreKeyBytes = Base64.getDecoder().decode(signedPreKeyStr)
+        val signedPreKeySignature = Base64.getDecoder().decode(signedPreKeySignatureStr)
         
         // One-time prekeys from a QR bundle are ignored on purpose. A bundle is long-lived, so
         // its single prekey is consumed by the first session; every later session would then
@@ -74,15 +83,17 @@ class SessionManager @Inject constructor(
         val oneTimePreKeyId = PreKeyBundle.NULL_PRE_KEY_ID
         val oneTimePreKeyBytes: ByteArray? = null
 
-        if (!json.has("kyberPreKeyId") || !json.has("kyberPreKey") || !json.has("kyberPreKeySignature")) {
+        val kyberPreKeyId = json["kyberPreKeyId"]?.jsonPrimitive?.intOrNull
+        val kyberPreKeyStr = json["kyberPreKey"]?.jsonPrimitive?.contentOrNull
+        val kyberPreKeySignatureStr = json["kyberPreKeySignature"]?.jsonPrimitive?.contentOrNull
+        if (kyberPreKeyId == null || kyberPreKeyStr == null || kyberPreKeySignatureStr == null) {
             throw IllegalArgumentException("Missing kyber prekey information in contact bundle")
         }
-        val kyberPreKeyId = json.getInt("kyberPreKeyId")
         if (kyberPreKeyId < 0) {
             throw IllegalArgumentException("Invalid kyberPreKeyId in contact bundle")
         }
-        val kyberPreKeyBytes = Base64.decode(json.getString("kyberPreKey"), Base64.NO_WRAP)
-        val kyberPreKeySignature = Base64.decode(json.getString("kyberPreKeySignature"), Base64.NO_WRAP)
+        val kyberPreKeyBytes = Base64.getDecoder().decode(kyberPreKeyStr)
+        val kyberPreKeySignature = Base64.getDecoder().decode(kyberPreKeySignatureStr)
 
         val preKeyBundle = PreKeyBundle(
             registrationId,
@@ -105,7 +116,7 @@ class SessionManager @Inject constructor(
     }
 
     /** Drops a broken session so the next message starts from a fresh prekey handshake. */
-    suspend fun resetSession(contactId: String) {
+    suspend fun resetSession(contactId: String) = withContext(Dispatchers.IO) {
         signalStore.deleteSession(SignalProtocolAddress(contactId, 1))
         Log.d(TAG, "Reset session for $contactId")
     }

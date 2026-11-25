@@ -66,11 +66,15 @@ object NetworkModule {
     @Singleton
     fun provideConnectionManager(
         profileRepository: ProfileRepository,
-        contactRepository: ContactRepository
+        contactRepository: ContactRepository,
+        secureKeyStore: com.example.lanman.data.security.SecureKeyStore,
+        blockedContactsStore: com.example.lanman.data.security.BlockedContactsStore
     ): ConnectionManager {
         return ConnectionManagerImpl(
             profileRepository = profileRepository,
-            contactRepository = contactRepository
+            contactRepository = contactRepository,
+            secureKeyStore = secureKeyStore,
+            blockedContactsStore = blockedContactsStore
         )
     }
 
@@ -80,6 +84,7 @@ object NetworkModule {
         @ApplicationContext context: Context,
         connectionManager: ConnectionManager,
         presenceTracker: PresenceTracker,
+        networkDiscoveryManager: NetworkDiscoveryManager,
         messageDispatcher: com.example.lanman.data.network.MessageDispatcher,
         incomingMessageReceiver: com.example.lanman.data.network.IncomingMessageReceiver,
         fileTransferReceiver: com.example.lanman.data.network.FileTransferReceiver
@@ -88,6 +93,7 @@ object NetworkModule {
             context = context,
             connectionManager = connectionManager,
             presenceTracker = presenceTracker,
+            networkDiscoveryManager = networkDiscoveryManager,
             messageDispatcher = messageDispatcher,
             incomingMessageReceiver = incomingMessageReceiver,
             fileTransferReceiver = fileTransferReceiver

@@ -9,17 +9,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lanman.domain.model.ContactPresence
+import com.example.lanman.domain.network.LanNetworkState
 import com.example.lanman.ui.common.AppIcons
 import com.example.lanman.ui.common.ContactAvatar
 import com.example.lanman.ui.common.EmptyState
@@ -28,12 +29,11 @@ import com.example.lanman.ui.common.GlassDialogText
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.GlassTextField
 import com.example.lanman.ui.common.LanmanTopBar
+import com.example.lanman.ui.common.PresenceDot
 import com.example.lanman.ui.common.QrCodeIcon
 import com.example.lanman.ui.common.contentWidth
 import com.example.lanman.ui.common.pressable
-import com.example.lanman.ui.theme.ElectricCyan
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 
 @Composable
 fun ContactListScreen(
@@ -44,6 +44,8 @@ fun ContactListScreen(
     viewModel: ContactListViewModel = hiltViewModel()
 ) {
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
+    val networkState by viewModel.networkState.collectAsStateWithLifecycle()
+    val colors = LanmanTheme.colors
 
     var query by remember { mutableStateOf("") }
     var removeTarget by remember { mutableStateOf<ContactPresence?>(null) }
@@ -56,20 +58,35 @@ fun ContactListScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             LanmanTopBar(
                 title = "Contacts",
+                subtitle = "${contacts.count { it.isOnline }} online of ${contacts.size} paired",
                 actions = {
+                    IconButton(onClick = { viewModel.refreshDiscovery() }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh local discovery",
+                            tint = colors.textPrimary
+                        )
+                    }
                     IconButton(onClick = onNavigateToMyQr) {
-                        QrCodeIcon(contentDescription = "Show my QR code", tint = TextPrimary)
+                        QrCodeIcon(contentDescription = "Show my QR code", tint = colors.textPrimary)
                     }
                 }
             )
 
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(modifier = Modifier.contentWidth().fillMaxHeight()) {
+                    DiscoveryBanner(
+                        networkState = networkState,
+                        onlineCount = contacts.count { it.isOnline },
+                        totalContacts = contacts.size,
+                        onRefresh = { viewModel.refreshDiscovery() }
+                    )
+
                     GlassTextField(
                         value = query,
                         onValueChange = { query = it },
@@ -86,9 +103,9 @@ fun ContactListScreen(
                             if (contacts.isEmpty()) {
                                 EmptyState(
                                     icon = AppIcons.PersonSearch,
-                                    title = "No contacts yet",
-                                    message = "Pair with someone nearby and they will show up here.",
-                                    actionLabel = "Add contact",
+                                    title = "No paired contacts yet",
+                                    message = "Scan a peer's QR code when on the same Wi-Fi network to start messaging securely.",
+                                    actionLabel = "Scan QR Code",
                                     onAction = onNavigateToAddContact
                                 )
                             } else {
@@ -110,7 +127,8 @@ fun ContactListScreen(
                                     presence = presence,
                                     onClick = { onNavigateToConversation(presence.contact.id) },
                                     onViewDetails = { onNavigateToContactDetail(presence.contact.id) },
-                                    onRemove = { removeTarget = presence }
+                                    onRemove = { removeTarget = presence },
+                                    modifier = Modifier.animateItem()
                                 )
                             }
                         }
@@ -119,13 +137,13 @@ fun ContactListScreen(
 
                 FloatingActionButton(
                     onClick = onNavigateToAddContact,
-                    containerColor = ElectricCyan,
-                    contentColor = Color.Black,
+                    containerColor = colors.accent,
+                    contentColor = colors.onAccent,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(24.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Contact")
+                    Icon(Icons.Default.Add, contentDescription = "Scan QR to Add Contact")
                 }
             }
         }
@@ -151,16 +169,66 @@ fun ContactListScreen(
 }
 
 @Composable
+private fun DiscoveryBanner(
+    networkState: LanNetworkState,
+    onlineCount: Int,
+    totalContacts: Int,
+    onRefresh: () -> Unit
+) {
+    val colors = LanmanTheme.colors
+    val statusText = when {
+        !networkState.isWifiConnected -> "Wi-Fi disconnected · Connect to a local network"
+        !networkState.isDiscoveryActive -> "Local discovery paused"
+        networkState.lastError != null -> networkState.lastError
+        totalContacts > 0 && onlineCount == 0 -> "Scanning LAN (${networkState.localAddresses.firstOrNull() ?: "Wi-Fi"}) · Ensure peers share Wi-Fi without client isolation"
+        else -> "Scanning LAN · ${networkState.localAddresses.firstOrNull() ?: "Wi-Fi active"}"
+    }
+
+    val isWarning = !networkState.isWifiConnected || !networkState.isDiscoveryActive || networkState.lastError != null
+
+    GlassSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .pressable(onClick = onRefresh),
+        shape = RoundedCornerShape(12.dp),
+        tint = if (isWarning) colors.warning.copy(alpha = 0.10f) else colors.surfaceGlass,
+        borderColor = if (isWarning) colors.warning.copy(alpha = 0.3f) else colors.border
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PresenceDot(
+                isOnline = networkState.isWifiConnected && networkState.isDiscoveryActive,
+                size = 8.dp
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isWarning) colors.textPrimary else colors.textSecondary,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
 fun ContactCard(
     presence: ContactPresence,
     onClick: () -> Unit,
     onViewDetails: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
+    val colors = LanmanTheme.colors
     var showMenu by remember { mutableStateOf(false) }
 
     GlassSurface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .pressable(onClick = onClick, onLongClick = { showMenu = true }),
         shape = RoundedCornerShape(16.dp)
@@ -183,13 +251,17 @@ fun ContactCard(
                 Text(
                     text = presence.contact.displayName,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = TextPrimary
+                    color = colors.textPrimary
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = if (presence.isOnline) "Online now" else "Offline",
+                    text = if (presence.isOnline) {
+                        "Online · ${presence.lastKnownIp ?: "LAN"}"
+                    } else {
+                        "Offline"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (presence.isOnline) ElectricCyan else TextSecondary
+                    color = if (presence.isOnline) colors.accent else colors.textSecondary
                 )
             }
 
@@ -197,34 +269,34 @@ fun ContactCard(
                 Icon(
                     imageVector = AppIcons.Chat,
                     contentDescription = "Message",
-                    tint = ElectricCyan
+                    tint = colors.accent
                 )
             }
 
             Box {
                 IconButton(onClick = { showMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = TextSecondary)
+                    Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = colors.textSecondary)
                 }
 
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
-                    modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    modifier = Modifier.background(colors.surfaceElevated)
                 ) {
                     DropdownMenuItem(
-                        text = { Text("View details", color = TextPrimary) },
+                        text = { Text("View details & safety code", color = colors.textPrimary) },
                         onClick = {
                             showMenu = false
                             onViewDetails()
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("Remove contact", color = MaterialTheme.colorScheme.error) },
+                        text = { Text("Remove contact", color = colors.error) },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Default.Delete,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error
+                                tint = colors.error
                             )
                         },
                         onClick = {

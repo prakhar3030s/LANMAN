@@ -22,6 +22,10 @@ class FileTransferRepositoryImpl @Inject constructor(
         return fileTransferDao.getByMessageIds(messageIds).map { list -> list.map { it.toDomain() } }
     }
 
+    override suspend fun getForContactSync(contactId: String): List<FileTransfer> {
+        return fileTransferDao.getForContactSync(contactId).map { it.toDomain() }
+    }
+
     override suspend fun insertFileTransfer(fileTransfer: FileTransfer) {
         fileTransferDao.insertFileTransfer(fileTransfer.toEntity())
     }

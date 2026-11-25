@@ -59,6 +59,9 @@ interface MessageDao {
     @Query("UPDATE messages SET status = 'READ' WHERE contactId = :contactId AND direction = 'INCOMING'")
     suspend fun markIncomingAsRead(contactId: String)
 
+    @Query("SELECT id FROM messages WHERE contactId = :contactId AND direction = 'INCOMING' AND status = 'DELIVERED'")
+    suspend fun getUnreadDeliveredIncomingIds(contactId: String): List<String>
+
     @Query("DELETE FROM messages WHERE contactId = :contactId")
     suspend fun deleteMessagesForContact(contactId: String)
 

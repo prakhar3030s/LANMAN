@@ -18,7 +18,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -32,8 +31,7 @@ import com.example.lanman.ui.common.GlassButton
 import com.example.lanman.ui.common.GlassSurface
 import com.example.lanman.ui.common.LanmanTopBar
 import com.example.lanman.ui.common.contentWidth
-import com.example.lanman.ui.theme.TextPrimary
-import com.example.lanman.ui.theme.TextSecondary
+import com.example.lanman.ui.theme.LanmanTheme
 import kotlinx.coroutines.launch
 
 @Composable
@@ -44,11 +42,12 @@ fun MessageRequestsScreen(
     val requests by viewModel.requests.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val colors = LanmanTheme.colors
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(colors.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             LanmanTopBar(
@@ -119,6 +118,7 @@ fun MessageRequestItem(
     onReject: () -> Unit,
     onBlock: () -> Unit
 ) {
+    val colors = LanmanTheme.colors
     GlassSurface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp)
@@ -131,12 +131,12 @@ fun MessageRequestItem(
                     Text(
                         text = request.displayName,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = TextPrimary
+                        color = colors.textPrimary
                     )
                     Text(
-                        text = "Wants to message you",
+                        text = "Unpaired peer · wants to connect",
                         style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
+                        color = colors.textSecondary
                     )
                 }
             }
@@ -146,8 +146,8 @@ fun MessageRequestItem(
             Text(
                 text = request.firstMessageText,
                 style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary,
-                maxLines = 3,
+                color = colors.textSecondary,
+                maxLines = 4,
                 overflow = TextOverflow.Ellipsis
             )
 
@@ -158,10 +158,10 @@ fun MessageRequestItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onBlock) {
-                    Text(text = "Block", color = MaterialTheme.colorScheme.error)
+                    Text(text = "Block", color = colors.error)
                 }
                 TextButton(onClick = onReject) {
-                    Text(text = "Decline", color = TextSecondary)
+                    Text(text = "Decline", color = colors.textSecondary)
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 GlassButton(

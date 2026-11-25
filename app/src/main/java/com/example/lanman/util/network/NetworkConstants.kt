@@ -9,6 +9,8 @@ object NetworkConstants {
     const val PRESENCE_TIMEOUT_MS = 9000L
     const val FAST_DISCOVERY_BURST_COUNT = 3
     const val FAST_DISCOVERY_BURST_DELAY_MS = 200L
+    const val TCP_KEEPALIVE_INTERVAL_MS = 20_000L
+    const val TCP_IDLE_TIMEOUT_MS = 50_000L
 
     const val CONTROL_SOCKET_BUFFER_SIZE = 64 * 1024       // 64 KB for low latency control
     const val DATA_SOCKET_BUFFER_SIZE = 1024 * 1024        // 1 MB for gigabit file transfers
