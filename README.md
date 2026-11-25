@@ -4,7 +4,7 @@
 
 ---
 
-## Verified Architecture
+## Architecture
 
 LANMAN runs an offline-first, store-and-forward messaging engine hosted inside `RadarService` (a `remoteMessaging` foreground service):
 
@@ -64,7 +64,7 @@ flowchart LR
 
 5. **Presentation Layer** (`ui/*`)
    - Jetpack Compose Material 3 **Translucent Monolith** design system supporting **Dark**, **Light**, and **System** theme modes.
-   - Contextual onboarding, Chat List with live LAN status pill and Quick-Scan/My-QR actions, Contact Discovery & Detail screens with Safety Numbers, Message Requests (Accept / Decline+Undo / Block), Conversation UI (delivery/read ticks, timestamps, image preview, file progress speed, cancel/retry), hold/slide-to-cancel Voice Recording (`MediaRecorder` AAC + `ON_PAUSE` cleanup) & scrubbing `VoicePlayer` (shared mutual-exclusion coordinator + audio focus), and Settings (Theme, Read Receipts, Discovery Pause/Diagnostics, Network Troubleshooting, Data Wipe).
+   - Contextual onboarding, Chat List with live LAN status pill and My-QR action, Contact Discovery & Detail screens with Safety Numbers, Message Requests (Accept / Decline+Undo / Block), Conversation UI (delivery/read ticks, timestamps, image preview, file progress speed, cancel/retry), hold/slide-to-cancel Voice Recording (`MediaRecorder` AAC + `ON_PAUSE` cleanup) & scrubbing `VoicePlayer` (shared mutual-exclusion coordinator + audio focus), and Settings (Theme, Read Receipts, Discovery Pause/Diagnostics, Network Troubleshooting, Data Wipe).
 
 ---
 
@@ -92,7 +92,7 @@ flowchart LR
 # Build debug APK
 ./gradlew assembleDebug
 
-# Run JVM unit tests (52 unit tests across protocol, crypto, receivers, dispatcher, use cases & ViewModels)
+# Run JVM unit tests (53 unit tests across protocol, crypto, receivers, dispatcher, use cases & ViewModels)
 ./gradlew testDebugUnitTest
 
 # Run Android lint
@@ -109,7 +109,7 @@ LANMAN enables R8/ProGuard minification (including stripping `Log.v`/`Log.d`/`Lo
 
 1. Create a signing keystore:
    ```bash
-   keytool -genkey -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias lanman
+   keytool -genkey -v -keystore app/release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias lanman
    ```
 2. Copy `keystore.properties.template` to `keystore.properties` in the project root and populate your credentials.
 3. Build the release APK:
@@ -144,12 +144,10 @@ LANMAN enables R8/ProGuard minification (including stripping `Log.v`/`Log.d`/`Lo
 ## Known Limitations & Scope
 
 - **Single-Device Identity:** LANMAN is currently designed for single-device profiles (`deviceId = 1`).
-- **Database Encryption at Rest:** Long-term cryptographic keys and active transfer keys are stored in Android Keystore-backed `EncryptedSharedPreferences`; the SQLite message database (`lanman_db`) relies on Android OS file-based encryption and app-sandbox isolation (Cloud Auto Backup is strictly disabled). See [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md).
+- **Database Encryption at Rest:** Long-term cryptographic keys and active transfer keys are stored in Android Keystore-backed `EncryptedSharedPreferences`; the SQLite message database (`lanman_db`) relies on Android OS file-based encryption and app-sandbox isolation (Cloud Auto Backup is strictly disabled).
 - **Same-LAN UUID Announcements:** Discovery heartbeats broadcast the device's UUID locally over Wi-Fi; pause discovery in **Settings** when connected to untrusted public networks.
 - **Additional Documentation:**
   - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — Protocol wire format, security model, DB migrations & manual 2-device test matrix
-  - [`docs/PROJECT_AUDIT.md`](./docs/PROJECT_AUDIT.md) — Audit & post-remediation tracker
-  - [`docs/SECURITY_AUDIT.md`](./docs/SECURITY_AUDIT.md) — Security review & hardening report
   - [`PRIVACY_POLICY.md`](./PRIVACY_POLICY.md) — Zero-cloud privacy guarantees
 
 ## License

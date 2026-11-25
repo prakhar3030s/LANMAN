@@ -1,9 +1,11 @@
 # ====================================================================
-# Documentation & Markdown (keep only root README.md)
+# Documentation & Markdown (keep only README, Privacy Policy & Architecture)
 # ====================================================================
 *.md
 *.MD
 !/README.md
+!/PRIVACY_POLICY.md
+!/docs/ARCHITECTURE.md
 
 # ====================================================================
 # Built Binaries and Packaging Artifacts
